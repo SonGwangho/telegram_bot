@@ -1,28 +1,40 @@
-from telegram import Update
-from telegram.ext import ContextTypes
 import requests
 from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import ContextTypes
+
 from MyUtils import MyUtils
+from TelegramBot import TelegramBot
+from datetime import datetime, timedelta
+
+telegram_bot = TelegramBot()
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("안녕하세요. 텔레그램 봇이 시작되었습니다.")
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="안녕하세요. 텔레그램 봇이 시작되었습니다.",
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         "사용 가능한 명령어\n"
         "/help - 도움말 보기\n"
-        "/bb - 오늘 삼성 야구함?"
+        '/bb ["", "오늘", "내일", "모레"] - 삼성 야구 일정\n'
+        '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
+        '/lck ["", "오늘", "내일", "모레"] - 롤 경기 일정'
     )
-    await update.message.reply_text(help_text)
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=help_text,
+    )
+
 
 async def bb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
 
-    
-
-
-    res = requests.get("https://www.samsunglions.com/score/score_index.asp")
+    res = requests.get("https://www.samsunglions.com/score/score_index.asp", timeout=10)
     res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")
@@ -32,11 +44,11 @@ async def bb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     month = MyUtils.getMonth()
     today = MyUtils.getDay()
-
-    # if args[0] == "내일":
-    #     today += 1
-    # elif args[0] == "모레":
-    #     today += 2
+    if args:
+        if args[0] == "내일":
+            today += 1
+        elif args[0] == "모레":
+            today += 2
 
     today_game = None
 
@@ -58,6 +70,122 @@ async def bb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             break
 
     if today_game:
-        await update.message.reply_text(today_game, parse_mode="HTML")
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=today_game,
+            parse_mode="HTML",
+        )
     else:
-        await update.message.reply_text("오늘 경기 없음")
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="경기가 없습니다.",
+        )
+
+async def bbr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+
+    params = {
+        "upperCategoryId": "kbaseball",
+        "categoryIds": ",kbo,kbs,kbaseballetc,premier12,apbc",
+        "date": MyUtils.getToday(),
+    }
+
+    target_date = args[0] if args else MyUtils.getYesterday("%Y-%m-%d")
+
+    res = requests.get("https://api-gw.sports.naver.com/schedule/calendar", params=params, timeout=10)
+    res.raise_for_status()
+
+    json = res.json()
+    data = json["result"]
+
+    matches = data["dates"]
+
+    game_id = None
+    game_infos = None
+    for m in matches:
+        if m["ymd"] == target_date:
+            game_infos = m["gameInfos"]
+            break
+
+    if not game_infos:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="경기가 없습니다.",
+        )
+
+    for g in game_infos:
+        if g["homeTeamCode"] == "SS" or g["awayTeamCode"] == "SS":
+            game_id = g["gameId"]
+            break
+
+    if not game_id:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="경기가 없습니다.",
+        )
+
+    info_url = f"https://api-gw.sports.naver.com/common-poll/question/game/{game_id}/info"
+    res = requests.get(info_url)
+
+    json = res.json()
+    data = json["result"]
+    game_info = data["gameInfo"]
+
+    homeTeamName = game_info["homeTeamName"]
+    awayTeamName = game_info["awayTeamName"]
+
+    homeTeamScore = game_info["homeTeamScore"]
+    awayTeamScore = game_info["awayTeamScore"]
+    
+    game_result = f'''
+<b>{target_date}</b>
+{homeTeamName} {homeTeamScore} : {awayTeamScore} {awayTeamName}
+'''
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=game_result,
+        parse_mode="HTML",
+    )
+        
+
+async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+
+    res = requests.get("https://esports-api.game.naver.com/service/v1/predict/leagueId/lck_2026", timeout=10)
+    res.raise_for_status()
+
+    json = res.json()
+    matches = json["content"]["matches"]
+
+    year = MyUtils.getYear()
+    month = MyUtils.getMonth()
+    day = MyUtils.getDay()
+
+    today = 0
+    if args:
+        if args[0] == "내일":
+            today += 2
+            day += 1
+        elif args[0] == "모레":
+            today += 4
+            day += 2
+        elif args[0].isdigit():
+            today += int(args[0]) * 2
+            day += int(args[0])
+    
+
+    away = [matches[today]["awayTeam"]["name"], matches[today + 1]["awayTeam"]["name"]]
+    home = [matches[today]["homeTeam"]["name"], matches[today + 1]["homeTeam"]["name"]]
+
+    return_text = f'''
+<b>{year}년 {month}월 {day}일 경기</b>
+1경기 {away[0]} vs {home[0]}
+2경기 {away[1]} vs {home[1]}
+    '''
+    
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text = return_text,
+        parse_mode="HTML",
+    )

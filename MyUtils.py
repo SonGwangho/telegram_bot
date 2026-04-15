@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class MyUtils:
 
@@ -30,6 +30,24 @@ class MyUtils:
             return now.strftime(format_map[fmt])
 
         return now.strftime(fmt)
+    
+    @staticmethod
+    def getYesterday(fmt="yyyy-mm-dd"):
+        yesterday = datetime.now() - timedelta(days=1)
+
+        format_map = {
+            "yyyy-mm-dd": "%Y-%m-%d",
+            "yyyymmdd": "%Y%m%d",
+            "yyyy.mm.dd": "%Y.%m.%d",
+            "yyyy/mm/dd": "%Y/%m/%d",
+            "hh:mm:ss": "%H:%M:%S",
+            "full": "%Y-%m-%d %H:%M:%S"
+        }
+
+        if fmt in format_map:
+            return yesterday.strftime(format_map[fmt])
+
+        return yesterday.strftime(fmt)
 
     @staticmethod
     def getYear(date_str=None, fmt="%Y-%m-%d"):

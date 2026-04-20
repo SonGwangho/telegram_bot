@@ -1,6 +1,6 @@
 from telegram.ext import Application, CommandHandler
 
-from commands import help_command, start_command, bb_command, bbr_command, lck_command
+from commands import help_command, start_command, bb_command, bbr_command, lck_command, stock_command
 from config import telegram_token
 
 
@@ -12,6 +12,7 @@ def main() -> None:
     application.add_handler(CommandHandler("bb", bb_command))
     application.add_handler(CommandHandler("bbr", bbr_command))
     application.add_handler(CommandHandler("lck", lck_command))
+    application.add_handler(CommandHandler("stock", stock_command))
 
     application.run_polling()
 

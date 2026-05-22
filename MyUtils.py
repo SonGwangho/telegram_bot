@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import requests
 
 class MyUtils:
 
@@ -63,3 +64,13 @@ class MyUtils:
     def getDay(date_str=None, fmt="%Y-%m-%d"):
         dt = MyUtils._get_datetime(date_str, fmt)
         return dt.day
+    
+    @staticmethod
+    def getUSD():
+        url = f'https://m.search.naver.com/p/csearch/content/qapirender.nhn?key=calculator&pkid=141&q=%ED%99%98%EC%9C%A8&where=m&u1=keb&u6=standardUnit&u7=0&u3=USD&u4=KRW&u8=down&u2=1'
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+
+        json = res.json()
+        usd = json["country"][1]["value"]
+        return float(usd.replace(",", ""))

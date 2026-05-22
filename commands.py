@@ -199,96 +199,38 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today_str = MyUtils.getToday("yyyymmdd")
 
-    codes_domestic = ["005930", "000660", "005380", "047040", "012450"]
+    codes_domestic = ["069500", "005930", "000660", "005380", "012450", "229200"]
+    상미씨_대우건설 = "047040"
     codes_world_index = [".INX"]
     codes_world_stock = ["GOOGL.O", "GOOG.O"]
+    codes_world_etf = ["SCHD.K"]
+
+    # 대우건설 넣기
+    #codes_domestic.insert(4, 상미씨_대우건설)
 
     results = []
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         domestic_results = list(executor.map(myService.fetch_domestic, codes_domestic))
-        world_index_results = list(executor.map(myService.fetch_world_index, codes_world_index))
-        world_stock_results = list(executor.map(myService.fetch_world_stock, codes_world_stock))
+        world_index_results = list(executor.map(myService.fetch_world, codes_world_index, ["index"] * len(codes_world_index)))
+        world_stock_results = list(executor.map(myService.fetch_world, codes_world_stock, ["stock"] * len(codes_world_stock)))
+        world_etf_results = list(executor.map(myService.fetch_world, codes_world_etf, ["etf"] * len(codes_world_etf)))
 
     results.extend(domestic_results)
     results.extend(world_index_results)
     results.extend(world_stock_results)
+    results.extend(world_etf_results)
 
-    return_text = f"<b>{today_str} 주식 정보</b>\n\n"
+    usd = MyUtils.getUSD()
+
+    return_text = f"<b>{today_str} 주식 정보</b>\n<b>환율 : {usd:,}원</b>\n\n"
+    
     for item in results:
+        value = item["value"] if item["isKRW"] else item["value"] * usd
         return_text += (
-            f'{item["name"]} : {item["value"]:,} '
+            f'{item["name"]} : {value:,.0f} '
             f'({item["sign"]}{item["rate"]:.2f}%) {item["emoji"]}\n'
         )
-
-#     codes = ["005930", "000660", "005380", "047040", "012450"]
-#     names = []
-#     values = []
-#     rates = []
-#     sign = []
-#     imogi = []
-
-#     for code in codes:
-#         url = f'https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:{code}'
-#         res = requests.get(url, timeout=10)
-#         res.raise_for_status()
-
-#         json = res.json()
-#         names.append(json["result"]["areas"][0]["datas"][0]["nm"])
-#         values.append(json["result"]["areas"][0]["datas"][0]["nv"])
-#         rates.append(json["result"]["areas"][0]["datas"][0]["cr"])
-#         if float(json["result"]["areas"][0]["datas"][0]["cr"]) > 0:
-#             sign.append("+")
-#             imogi.append("🔺")
-#         else:
-#             sign.append("-")
-#             imogi.append("🔻")
-    
-#     url = f"https://polling.finance.naver.com/api/realtime/worldstock/index/.INX"
-#     res = requests.get(url, timeout=10)
-#     res.raise_for_status()
-
-#     json = res.json()
-#     data = json["datas"][0]
-    
-#     names.append(data["indexName"])
-#     values.append(float(data["closePriceRaw"]))
-#     rates.append(float(data["fluctuationsRatioRaw"]))
-
-#     if data["compareToPreviousPrice"]["name"] == "RISING":
-#         sign.append("+")
-#         imogi.append("🔺")
-#     else:
-#         sign.append("-")
-#         imogi.append("🔻")
-
-#     codes = ["GOOGL.O", "GOOG.O"]
-#     for code in codes:
-#         url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{code}"
-#         res = requests.get(url, timeout=10)
-#         res.raise_for_status()
-
-#         json = res.json()
-#         data = json["datas"][0]
-        
-#         names.append(data["stockName"])
-#         values.append(float(data["closePriceRaw"]))
-#         rates.append(float(data["fluctuationsRatioRaw"]))
-
-#         if data["compareToPreviousPrice"]["name"] == "RISING":
-#             sign.append("+")
-#             imogi.append("🔺")
-#         else:
-#             sign.append("-")
-#             imogi.append("🔻")
-
-#     return_text = f'''
-# <b>{today_str} 주식 정보</b>
-
-# '''
-    
-#     for i in range(len(names)):
-#         return_text += f"{names[i]} : {values[i]:,} ({sign[i]}{rates[i]}%) {imogi[i]}\n"
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,

@@ -7,7 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
 from datetime import datetime, timedelta
+from gemini import gemini_bot
 import myService
+import storage
 
 telegram_bot = TelegramBot()
 
@@ -23,16 +25,51 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "사용 가능한 명령어\n"
         "/help - 도움말 보기\n"
+        "/reg 이름 생년월일(YYYYMMDD) - 사용자 등록\n"
         '/bb ["", "오늘", "내일", "모레"] - 삼성 야구 일정\n'
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
         '/lck ["", "오늘", "내일", "모레"] - 롤 경기 일정\n'
-        '/stock - 증시 정보'
+        '/stock - 증시 정보\n'
+        '/f - 오늘의 운세'
     )
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=help_text,
     )
 
+async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    args = context.args
+
+    if len(args) < 2:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="사용자 등록 형식이 올바르지 않습니다. /reg 이름 생년월일(YYYYMMDD)",
+            parse_mode="HTML",
+        )
+        return
+
+    name = args[0]
+    birthdate = args[1]
+
+    user_data = {}
+    if storage.isExist("user"):
+        user_data = storage.get("user")
+    else:
+        storage.create("user")
+    
+    user_data[user_id] = {
+        "name": name,
+        "birthdate": birthdate,
+    }
+
+    storage.update("user", user_data)
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"{name}님이 등록되었습니다.",
+        parse_mode="HTML",
+    )
 
 async def bb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
@@ -202,7 +239,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     codes_domestic = ["069500", "005930", "000660", "005380", "012450", "229200"]
     상미씨_대우건설 = "047040"
     codes_world_index = [".INX"]
-    codes_world_stock = ["GOOGL.O", "GOOG.O"]
+    codes_world_stock = ["GOOG.O"]
     codes_world_etf = ["SCHD.K"]
 
     # 대우건설 넣기
@@ -223,7 +260,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     usd = MyUtils.getUSD()
 
-    return_text = f"<b>{today_str} 주식 정보</b>\n<b>환율 : {usd:,}원</b>\n\n"
+    return_text = f"<b>{today_str} 주식 정보</b>\n<b>환율 : {usd:,}원</b>\n\n"  
     
     for item in results:
         value = item["value"] if item["isKRW"] else item["value"] * usd
@@ -235,5 +272,63 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text = return_text,
+        parse_mode="HTML",
+    )
+
+async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+
+    user_json = {}
+    if storage.isExist("user"):
+        user_json = storage.get("user")
+    else:
+        storage.create("user")
+    
+    user = user_json.get(user_id)
+
+    if not user:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text = "사용자 등록을 먼저 해주세요 /reg 이름 생년월일(YYYYMMDD)",
+            parse_mode="HTML",
+        )
+        return
+
+    name = user["name"]
+    birthdate = user["birthdate"]
+
+    today_str = MyUtils.getToday("yyyy-mm-dd")
+    question = " ".join(context.args).strip() if context.args else "today"
+    cache_key = f"{today_str}:{question}"
+
+    fortune_cache = {}
+    if storage.isExist("fortune_cache"):
+        fortune_cache = storage.get("fortune_cache")
+    else:
+        storage.create("fortune_cache")
+
+    user_cache = fortune_cache.setdefault(user_id, {})
+    cached_answer = user_cache.get(cache_key)
+
+    if cached_answer:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=cached_answer,
+            parse_mode="HTML",
+        )
+        return
+
+    answer = await gemini_bot.generate_fortune_async(
+        name,
+        birthdate,
+        f"이름은 {name}이고 생일은 {birthdate}야. {today_str} 날짜 기준으로 '{question}' 질문에 맞춰 운세 알려줘.",
+    )
+
+    user_cache[cache_key] = answer
+    storage.update("fortune_cache", fortune_cache)
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=answer,
         parse_mode="HTML",
     )

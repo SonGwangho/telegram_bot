@@ -11,6 +11,7 @@
 - 명령어 이벤트 함수는 `commands.py`에 작성
 - 명령어 등록 및 봇 실행은 `main.py`에서 담당
 - 공통 Bot API 기능은 `TelegramBot.py` 클래스에서 담당
+- AI 관련 기능은 `gemini.py` 클래스에서 담당.
 
 ## 현재 파일 구성
 - `main.py`

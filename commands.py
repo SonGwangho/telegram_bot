@@ -4,6 +4,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from concurrent.futures import ThreadPoolExecutor
 
+from config import admin_user_id
+
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
 from datetime import datetime, timedelta
@@ -30,7 +32,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
         '/lck ["", "오늘", "내일", "모레"] - 롤 경기 일정\n'
         '/stock - 증시 정보\n'
-        '/f - 오늘의 운세'
+        '/f - 오늘의 운세\n'
+        '/chat 질문 - AI와 대화하기\n'
     )
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
@@ -236,14 +239,22 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today_str = MyUtils.getToday("yyyymmdd")
 
-    codes_domestic = ["069500", "005930", "000660", "005380", "012450", "229200"]
+    #9시인지 체크
+    if MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S").hour < 9:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="증시 정보는 오전 9시 이후에 제공됩니다.",
+        )
+        return
+
+    codes_domestic = ["069500", "005930", "000660", "035420", "066570", "005380", "012450", "229200"]
     상미씨_대우건설 = "047040"
     codes_world_index = [".INX"]
     codes_world_stock = ["GOOG.O"]
     codes_world_etf = ["SCHD.K"]
 
     # 대우건설 넣기
-    #codes_domestic.insert(4, 상미씨_대우건설)
+    codes_domestic.insert(4, 상미씨_대우건설)
 
     results = []
 
@@ -332,3 +343,66 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         text=answer,
         parse_mode="HTML",
     )
+
+async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+
+    user_json = {}
+    if storage.isExist("user"):
+        user_json = storage.get("user")
+    else:
+        storage.create("user")
+    
+    user = user_json.get(user_id)
+
+    if not user:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text = "사용자 등록을 먼저 해주세요 /reg 이름 생년월일(YYYYMMDD)",
+            parse_mode="HTML",
+        )
+        return
+    
+    cache = {}
+    if storage.isExist("chat_cache"):
+        cache = storage.get("chat_cache")
+    else:
+        storage.create("chat_cache")
+
+    if not context.args:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="질문을 입력해주세요. 예시: /chat 오늘 날씨 어때?",
+            parse_mode="HTML",
+        )
+        return
+    
+    question = " ".join(context.args).strip()
+
+    user_cache = cache.setdefault(user_id, {})
+    last_chat_datetime_str = user_cache.get("last_chat_datetime")
+
+    now_datetime = MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S")
+    if user_id != admin_user_id and last_chat_datetime_str:
+
+        last_chat_datetime = MyUtils._get_datetime(last_chat_datetime_str, "%Y-%m-%d %H:%M:%S")
+        if now_datetime - last_chat_datetime < timedelta(minutes=1):
+            await telegram_bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="1분에 1번씩만 질문할 수 있어요",
+                parse_mode="HTML",
+            )
+            return
+    
+    user_cache["last_chat_datetime"] = now_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    storage.update("chat_cache", cache)
+
+    answer = await gemini_bot.generate_text_async(
+        question,
+    )
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=answer,
+        parse_mode="HTML",
+    )
+    

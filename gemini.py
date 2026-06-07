@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import shutil
 from datetime import datetime
 from json import JSONDecodeError
@@ -31,6 +32,7 @@ class GeminiBot:
         backup_dir: str | Path | None = None,
     ) -> None:
         self.api_key = api_key or gemini_api_key
+        # self.model = model or gemini_model
         self.model = model or gemini_model_lite
         self.data_file = Path(data_file or gemini_data_file)
         self.backup_dir = Path(backup_dir or gemini_backup_dir)
@@ -46,9 +48,15 @@ class GeminiBot:
         save: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        new_prompt = f"""
+너는 한국어로 답변하는 AI야.
+반드시 500자 이내로 답변해.
+
+사용자 질문:{prompt}
+        """
         response = self.client.models.generate_content(
             model=self.model,
-            contents=prompt,
+            contents= new_prompt,
         )
         text = response.text or ""
 
@@ -124,10 +132,13 @@ class GeminiBot:
         name_text = name or "user"
         birthdate_text = birthdate or "unknown"
         question_text = question or "오늘의 종합 운세"
+        random_value = random.randint(1, 100)
 
         return f"""
 너는 운세 상담가야.
 답변은 한국어로 작성해줘.
+
+오늘 운세 랜덤값: 상위 {random_value}%
 
 사용자 정보:
 - 이름: {name_text}
@@ -135,6 +146,9 @@ class GeminiBot:
 - 질문: {question_text}
 
 응답 형식:
+
+- 오늘의 운세는 상위 {random_value}% 입니다.
+
 1. 오늘의 흐름
 2. 조심할 점
 3. 작은 조언
@@ -142,7 +156,7 @@ class GeminiBot:
 규칙:
 - 300자 이내로 답변할 것.
 """.strip()
-
+    
     def load_records(self) -> list[dict[str, Any]]:
         if not self.data_file.exists() or self.data_file.stat().st_size == 0:
             return []

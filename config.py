@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 admin_user_id = os.getenv("admin_user_id")
+admin_chat_id = os.getenv("admin_chat_id")
 
 telegram_token = os.getenv("telegram_token")
 gemini_api_key = os.getenv("gemini_api_key")

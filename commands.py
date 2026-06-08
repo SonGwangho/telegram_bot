@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes
 from concurrent.futures import ThreadPoolExecutor
 
 from config import admin_user_id
+from config import admin_chat_id
 
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
@@ -35,6 +36,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/f - 오늘의 운세\n'
         '/chat 질문 - AI와 대화하기\n'
     )
+
+    print(f"help_command called by user_id={update.effective_user.id}")
+    print(f"help_command called by chat_id={update.effective_chat.id}")
+
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=help_text,
@@ -247,7 +252,8 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    codes_domestic = ["069500", "005930", "000660", "035420", "066570", "005380", "012450", "229200"]
+    #KODEX 200, 삼성전자, SK하이닉스, 한미반도체, 대우건설, LG전자, 현대차
+    codes_domestic = ["069500", "005930", "000660", "042700", "066570", "005380", "229200"]
     상미씨_대우건설 = "047040"
     codes_world_index = [".INX"]
     codes_world_stock = ["GOOG.O"]
@@ -383,7 +389,7 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     last_chat_datetime_str = user_cache.get("last_chat_datetime")
 
     now_datetime = MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S")
-    if user_id != admin_user_id and last_chat_datetime_str:
+    if user_id != admin_user_id and admin_chat_id != str(update.effective_chat.id) and last_chat_datetime_str:
 
         last_chat_datetime = MyUtils._get_datetime(last_chat_datetime_str, "%Y-%m-%d %H:%M:%S")
         if now_datetime - last_chat_datetime < timedelta(minutes=1):
@@ -399,10 +405,13 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     answer = await gemini_bot.generate_text_async(
         question,
+        metadata={
+            "type": "chat",
+            "user_id": user_id,
+        },
     )
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=answer,
         parse_mode="HTML",
     )
-    

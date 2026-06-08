@@ -3,4 +3,4 @@ python-dotenv
 requests
 bs4
 google-genai
-google
+google  

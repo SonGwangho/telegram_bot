@@ -47,16 +47,16 @@ class GeminiBot:
         *,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
+        history_limit: int = 5,
     ) -> str:
-        new_prompt = f"""
-너는 한국어로 답변하는 AI야.
-반드시 500자 이내로 답변해.
-
-사용자 질문:{prompt}
-        """
+        new_prompt = self.build_chat_prompt(
+            prompt=prompt,
+            metadata=metadata,
+            history_limit=history_limit,
+        )
         response = self.client.models.generate_content(
             model=self.model,
-            contents= new_prompt,
+            contents=new_prompt,
         )
         text = response.text or ""
 
@@ -75,12 +75,14 @@ class GeminiBot:
         *,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
+        history_limit: int = 5,
     ) -> str:
         return await asyncio.to_thread(
             self.generate_text,
             prompt,
             save=save,
             metadata=metadata,
+            history_limit=history_limit,
         )
 
     def generate_fortune(
@@ -137,6 +139,8 @@ class GeminiBot:
         return f"""
 너는 운세 상담가야.
 답변은 한국어로 작성해줘.
+운세는 100명 중 {random_value}등에 해당하는 운세에 맞춰서 알려줘.
+100명 중 1등이면 오늘은 좋은 날이고 100명 중 100등이면 오늘은 좋지 않은 날이야.
 
 오늘 운세 랜덤값: 상위 {random_value}%
 
@@ -157,6 +161,69 @@ class GeminiBot:
 - 300자 이내로 답변할 것.
 """.strip()
     
+    def build_chat_prompt(
+        self,
+        *,
+        prompt: str,
+        metadata: dict[str, Any] | None = None,
+        history_limit: int = 5,
+    ) -> str:
+        history = self.get_user_chat_history(metadata=metadata, limit=history_limit)
+        history_text = self.format_chat_history(history)
+
+        if history_text:
+            return f"""
+너는 한국어로 답변하는 AI야.
+반드시 500자 이내로 답변해.
+아래 이전 대화는 같은 사용자와 나눈 대화야. 필요한 경우에만 참고해.
+
+이전 대화:
+{history_text}
+
+사용자 질문:{prompt}
+""".strip()
+
+        return f"""
+너는 한국어로 답변하는 AI야.
+반드시 500자 이내로 답변해.
+
+사용자 질문:{prompt}
+""".strip()
+
+    def get_user_chat_history(
+        self,
+        *,
+        metadata: dict[str, Any] | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        user_id = (metadata or {}).get("user_id")
+        if not user_id or limit <= 0:
+            return []
+
+        user_id = str(user_id)
+        records = self.load_records()
+        history = [
+            record
+            for record in records
+            if str(record.get("metadata", {}).get("user_id")) == user_id
+            and record.get("metadata", {}).get("type", "chat") == "chat"
+        ]
+        return history[-limit:]
+
+    @staticmethod
+    def format_chat_history(records: list[dict[str, Any]]) -> str:
+        lines = []
+        for record in records:
+            prompt = str(record.get("prompt", "")).strip()
+            response = str(record.get("response", "")).strip()
+            if not prompt or not response:
+                continue
+
+            lines.append(f"사용자: {prompt}")
+            lines.append(f"AI: {response}")
+
+        return "\n".join(lines)
+
     def load_records(self) -> list[dict[str, Any]]:
         if not self.data_file.exists() or self.data_file.stat().st_size == 0:
             return []

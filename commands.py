@@ -244,6 +244,7 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today_str = MyUtils.getToday("yyyymmdd")
 
+
     #9시인지 체크
     if MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S").hour < 9:
         await telegram_bot.send_message(
@@ -252,15 +253,18 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    #KODEX 200, 삼성전자, SK하이닉스, 한미반도체, 대우건설, LG전자, 현대차
+    #KODEX 200, 삼성전자, SK하이닉스, 한미반도체, LG전자, 현대차, KODEX 코스닥150
     codes_domestic = ["069500", "005930", "000660", "042700", "066570", "005380", "229200"]
     상미씨_대우건설 = "047040"
+    #S&P
     codes_world_index = [".INX"]
+    #알파벳 C
     codes_world_stock = ["GOOG.O"]
+    #슈드
     codes_world_etf = ["SCHD.K"]
 
     # 대우건설 넣기
-    codes_domestic.insert(4, 상미씨_대우건설)
+    # codes_domestic.insert(4, 상미씨_대우건설)
 
     results = []
 

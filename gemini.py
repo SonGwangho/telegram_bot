@@ -101,6 +101,7 @@ class GeminiBot:
         return self.generate_text(
             prompt,
             save=save,
+            history_limit=0,
             metadata={
                 "type": "fortune",
                 "name": name,
@@ -126,39 +127,50 @@ class GeminiBot:
         )
 
     def build_fortune_prompt(
-        self,
-        name: str = "",
-        birthdate: str = "",
-        question: str = "",
+    self,
+    name: str = "",
+    birthdate: str = "",
+    question: str = "",
     ) -> str:
-        name_text = name or "user"
-        birthdate_text = birthdate or "unknown"
-        question_text = question or "오늘의 종합 운세"
-        random_value = random.randint(1, 100)
+        name_text = name.strip() or "사용자"
+        birthdate_text = birthdate.strip() or "미상"
+        question_text = question.strip() or "오늘의 종합 운세"
+
+        rank = random.randint(1, 100)
 
         return f"""
-너는 운세 상담가야.
-답변은 한국어로 작성해줘.
-운세는 100명 중 {random_value}등에 해당하는 운세에 맞춰서 알려줘.
-100명 중 1등이면 오늘은 좋은 날이고 100명 중 100등이면 오늘은 좋지 않은 날이야.
+너는 따뜻하고 차분한 한국어 운세 상담가다.
+사용자가 가볍게 즐길 수 있는 오늘의 운세를 작성해라.
 
-오늘 운세 랜덤값: 상위 {random_value}%
+운세는 아래 등수와 오늘날짜의 사용자 사주를 기준으로 분위기를 조절한다.
 
-사용자 정보:
-- 이름: {name_text}
-- 생년월일: {birthdate_text}
-- 질문: {question_text}
+[오늘의 운세 지표]
+100명 중 {rank}등
 
-응답 형식:
+해석 기준:
+- 1~20등: 좋은 기운이 강한 날
+- 21~50등: 무난하지만 기회가 있는 날
+- 51~80등: 신중함이 필요한 날
+- 81~100등: 욕심을 줄이고 방어적으로 움직일 날
 
-- 오늘의 운세는 상위 {random_value}% 입니다.
+[사용자 정보]
+이름: {name_text}
+생년월일: {birthdate_text}
+질문: {question_text}
 
-1. 오늘의 흐름
-2. 조심할 점
-3. 작은 조언
+[응답 형식]
+오늘의 운세는 상위 {rank}% 입니다.
 
-규칙:
-- 300자 이내로 답변할 것.
+1. 오늘의 흐름:
+2. 조심할 점:
+3. 작은 조언:
+
+[규칙]
+- 300자 이내
+- 한국어로만 답변
+- 사주팔자, 주역, 오행 같은 전통 운세 느낌을 살짝 섞기
+- 현실적인 조언도 함께 넣기
+- 공포감, 저주, 확정적인 예언처럼 말하지 않기
 """.strip()
     
     def build_chat_prompt(

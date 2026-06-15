@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from google import genai
+from google.genai import errors as genai_errors
 
 from config import gemini_api_key, gemini_model, gemini_model_lite
 
@@ -44,26 +45,35 @@ class GeminiBot:
     def generate_text(
         self,
         prompt: str,
+        model_type: str | None = None,
         *,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
         history_limit: int = 5,
     ) -> str:
+        selected_model = model_type or self.model
+
         new_prompt = self.build_chat_prompt(
             prompt=prompt,
             metadata=metadata,
             history_limit=history_limit,
         )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=new_prompt,
-        )
-        text = response.text or ""
+
+        try:
+            response = self.client.models.generate_content(
+                model=selected_model,
+                contents=new_prompt,
+            )
+            text = response.text or ""
+        except genai_errors.APIError:
+            text = "제미나이 API 에러"
+            save = False
 
         if save:
             self.save_record(
                 prompt=prompt,
                 response=text,
+                model=selected_model,
                 metadata=metadata,
             )
 
@@ -72,6 +82,7 @@ class GeminiBot:
     async def generate_text_async(
         self,
         prompt: str,
+        model_type: str | None = None,
         *,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
@@ -80,6 +91,7 @@ class GeminiBot:
         return await asyncio.to_thread(
             self.generate_text,
             prompt,
+            model_type,
             save=save,
             metadata=metadata,
             history_limit=history_limit,
@@ -100,6 +112,7 @@ class GeminiBot:
         )
         return self.generate_text(
             prompt,
+            model_type = gemini_model,
             save=save,
             history_limit=0,
             metadata={
@@ -136,22 +149,16 @@ class GeminiBot:
         birthdate_text = birthdate.strip() or "미상"
         question_text = question.strip() or "오늘의 종합 운세"
 
-        rank = random.randint(1, 100)
-
         return f"""
 너는 따뜻하고 차분한 한국어 운세 상담가다.
 사용자가 가볍게 즐길 수 있는 오늘의 운세를 작성해라.
 
-운세는 아래 등수와 오늘날짜의 사용자 사주를 기준으로 분위기를 조절한다.
+운세는 오늘날짜와 사용자 생년월일을 이용하여 사용자 사주를 기준으로 판단한다.
+사주를 기준으로 오늘의 운세를 상위 ??%로 표현해라.
+운세는 사주팔자, 주역, 오행 같은 전통 운세 느낌.
+생년월일은 YYYYMMDD 기준으로 제공된다.
 
 [오늘의 운세 지표]
-100명 중 {rank}등
-
-해석 기준:
-- 1~20등: 좋은 기운이 강한 날
-- 21~50등: 무난하지만 기회가 있는 날
-- 51~80등: 신중함이 필요한 날
-- 81~100등: 욕심을 줄이고 방어적으로 움직일 날
 
 [사용자 정보]
 이름: {name_text}
@@ -159,7 +166,7 @@ class GeminiBot:
 질문: {question_text}
 
 [응답 형식]
-오늘의 운세는 상위 {rank}% 입니다.
+오늘의 운세는 상위 ??% 입니다.
 
 1. 오늘의 흐름:
 2. 조심할 점:
@@ -170,7 +177,6 @@ class GeminiBot:
 - 한국어로만 답변
 - 사주팔자, 주역, 오행 같은 전통 운세 느낌을 살짝 섞기
 - 현실적인 조언도 함께 넣기
-- 공포감, 저주, 확정적인 예언처럼 말하지 않기
 """.strip()
     
     def build_chat_prompt(
@@ -265,13 +271,14 @@ class GeminiBot:
         *,
         prompt: str,
         response: str,
+        model: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         records = self.load_records()
         record = {
             "id": uuid4().hex,
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "model": self.model,
+            "model": model or self.model,
             "prompt": prompt,
             "response": response,
             "metadata": metadata or {},

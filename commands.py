@@ -342,7 +342,7 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     answer = await gemini_bot.generate_fortune_async(
         name,
         birthdate,
-        f"이름은 {name}이고 생일은 {birthdate}야. {today_str} 날짜 기준으로 '{question}' 질문에 맞춰 운세 알려줘.",
+        f"'{question}'에 해당하는 운세 알려줘.",
     )
 
     user_cache[cache_key] = answer

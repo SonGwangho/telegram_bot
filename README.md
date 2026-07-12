@@ -162,3 +162,12 @@ app.add_handler(CommandHandler("echo", echo_command))
 2. `main.py`에서 `CommandHandler`로 등록
 3. 필요하면 `TelegramBot` 클래스로 별도 알림 전송 기능 추가
 4. 로컬에서 실행 후 텔레그램 채팅방에서 테스트
+
+## 주식 및 Gemini 기능
+
+- `/stock`: 국내·해외 종목과 USD/KRW 환율을 동시에 조회합니다. 결과는 60초 동안 캐시하며, 일부 종목 조회가 실패해도 성공한 종목은 계속 표시합니다.
+- `/chat 질문`: `gemini_model`을 우선 사용하고 실패하면 `gemini_model_lite`로 한 번 대체합니다.
+- `/chat 초기화`: 현재 사용자와 현재 채팅방에 저장된 AI 대화 기록만 삭제합니다.
+- `/f [질문]`: 비용과 응답 속도를 고려해 `gemini_model_lite`를 사용합니다.
+
+Gemini 대화 기록은 `gemini_data_file`에 저장되고 최대 2,000건을 유지합니다. Gemini API 호출이 모두 실패하면 기존 동작처럼 `제미나이 API 에러 - 원문` 형식으로 오류를 반환합니다.

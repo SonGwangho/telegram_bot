@@ -1,20 +1,42 @@
+import asyncio
+import html
+import logging
+from datetime import datetime, timedelta
+
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ContextTypes
-from concurrent.futures import ThreadPoolExecutor
 
 from config import admin_user_id
 from config import admin_chat_id
 
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
-from datetime import datetime, timedelta
 from gemini import gemini_bot
 import myService
 import storage
 
 telegram_bot = TelegramBot()
+logger = logging.getLogger(__name__)
+
+STOCK_TARGETS = (
+    myService.StockTarget("069500", "domestic"),  # KODEX 200
+    myService.StockTarget("005930", "domestic"),  # 삼성전자
+    myService.StockTarget("000660", "domestic"),  # SK하이닉스
+    myService.StockTarget("042700", "domestic"),  # 한미반도체
+    myService.StockTarget("066570", "domestic"),  # LG전자
+    myService.StockTarget("005380", "domestic"),  # 현대차
+    myService.StockTarget("229200", "domestic"),  # KODEX 코스닥150
+    myService.StockTarget(".INX", "index"),       # S&P 500
+    myService.StockTarget("GOOG.O", "stock"),     # 알파벳 C
+    myService.StockTarget("QQQ.O", "etf"),
+    myService.StockTarget("SCHD.K", "etf"),
+)
+STOCK_CACHE_KEY = "stock_snapshot"
+STOCK_CACHE_SECONDS = 60
+MAX_CHAT_QUESTION_LENGTH = 2_000
+CHAT_RESET_WORDS = {"reset", "초기화", "대화초기화"}
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -35,6 +57,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/stock - 증시 정보\n'
         '/f - 오늘의 운세\n'
         '/chat 질문 - AI와 대화하기\n'
+        '/chat 초기화 - 이전 AI 대화 지우기\n'
     )
 
     print(f"help_command called by user_id={update.effective_user.id}")
@@ -59,6 +82,14 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     name = args[0]
     birthdate = args[1]
+    try:
+        datetime.strptime(birthdate, "%Y%m%d")
+    except ValueError:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="생년월일은 실제 날짜를 YYYYMMDD 형식으로 입력해 주세요.",
+        )
+        return
 
     user_data = {}
     if storage.isExist("user"):
@@ -242,57 +273,91 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today_str = MyUtils.getToday("yyyymmdd")
+    now = datetime.now()
+    snapshot = context.bot_data.get(STOCK_CACHE_KEY)
+    cache_is_fresh = (
+        isinstance(snapshot, dict)
+        and isinstance(snapshot.get("fetched_at"), datetime)
+        and (now - snapshot["fetched_at"]).total_seconds() < STOCK_CACHE_SECONDS
+    )
 
-
-    #9시인지 체크
-    if MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S").hour < 9:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="증시 정보는 오전 9시 이후에 제공됩니다.",
+    if cache_is_fresh:
+        quotes = snapshot["quotes"]
+        failures = snapshot["failures"]
+        usd_krw = snapshot["usd_krw"]
+        fetched_at = snapshot["fetched_at"]
+    else:
+        await telegram_bot.send_chat_action(update.effective_chat.id)
+        quote_result, exchange_result = await asyncio.gather(
+            asyncio.to_thread(myService.fetch_quotes, STOCK_TARGETS),
+            asyncio.to_thread(myService.fetch_usd_krw),
+            return_exceptions=True,
         )
-        return
 
-    #KODEX 200, 삼성전자, SK하이닉스, 한미반도체, LG전자, 현대차, KODEX 코스닥150
-    codes_domestic = ["069500", "005930", "000660", "042700", "066570", "005380", "229200"]
-    상미씨_대우건설 = "047040"
-    #S&P
-    codes_world_index = [".INX"]
-    #알파벳 C
-    codes_world_stock = ["GOOG.O"]
-    #슈드
-    codes_world_etf = ["SCHD.K"]
+        if isinstance(quote_result, Exception):
+            logger.error("Stock snapshot fetch failed: %s", quote_result)
+            await telegram_bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="주식 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            )
+            return
 
-    # 대우건설 넣기
-    # codes_domestic.insert(4, 상미씨_대우건설)
+        quotes, failures = quote_result
+        if not quotes:
+            failed_codes = ", ".join(failure.target.code for failure in failures)
+            await telegram_bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"주식 정보를 불러오지 못했습니다. ({failed_codes})",
+            )
+            return
 
-    results = []
+        if isinstance(exchange_result, Exception):
+            logger.warning("USD/KRW fetch failed: %s", exchange_result)
+            usd_krw = None
+        else:
+            usd_krw = exchange_result
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        domestic_results = list(executor.map(myService.fetch_domestic, codes_domestic))
-        world_index_results = list(executor.map(myService.fetch_world, codes_world_index, ["index"] * len(codes_world_index)))
-        world_stock_results = list(executor.map(myService.fetch_world, codes_world_stock, ["stock"] * len(codes_world_stock)))
-        world_etf_results = list(executor.map(myService.fetch_world, codes_world_etf, ["etf"] * len(codes_world_etf)))
+        fetched_at = now
+        context.bot_data[STOCK_CACHE_KEY] = {
+            "quotes": quotes,
+            "failures": failures,
+            "usd_krw": usd_krw,
+            "fetched_at": fetched_at,
+        }
 
-    results.extend(domestic_results)
-    results.extend(world_index_results)
-    results.extend(world_stock_results)
-    results.extend(world_etf_results)
+    if usd_krw is None:
+        exchange_line = "환율 조회 실패 · 해외 종목은 달러로 표시"
+    else:
+        exchange_line = f"USD/KRW {usd_krw:,.2f}원"
 
-    usd = MyUtils.getUSD()
+    lines = [
+        f"<b>{MyUtils.getToday('yyyy-mm-dd')} 주식 정보</b>",
+        f"조회 {fetched_at:%H:%M:%S} · {exchange_line}",
+        "",
+    ]
 
-    return_text = f"<b>{today_str} 주식 정보</b>\n<b>환율 : {usd:,}원</b>\n\n"  
-    
-    for item in results:
-        value = item["value"] if item["isKRW"] else item["value"] * usd
-        return_text += (
-            f'{item["name"]} : {value:,.0f} '
-            f'({item["sign"]}{item["rate"]:.2f}%) {item["emoji"]}\n'
+    for quote in quotes:
+        name = html.escape(str(quote["name"]))
+        change = f'{quote["sign"]}{quote["rate"]:.2f}%'
+        if quote["isKRW"]:
+            price = f'{quote["value"]:,.0f}원'
+        elif usd_krw is None:
+            price = f'${quote["value"]:,.2f}'
+        else:
+            converted_price = quote["value"] * usd_krw
+            price = f'${quote["value"]:,.2f} (약 {converted_price:,.0f}원)'
+
+        lines.append(f'{name}: {price} ({change}) {quote["emoji"]}')
+
+    if failures:
+        failed_codes = ", ".join(
+            html.escape(failure.target.code) for failure in failures
         )
+        lines.extend(["", f"<i>일부 종목 조회 실패: {failed_codes}</i>"])
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
-        text = return_text,
+        text="\n".join(lines),
         parse_mode="HTML",
     )
 
@@ -319,7 +384,7 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     birthdate = user["birthdate"]
 
     today_str = MyUtils.getToday("yyyy-mm-dd")
-    question = " ".join(context.args).strip() if context.args else "today"
+    question = " ".join(context.args).strip() if context.args else "오늘의 종합 운세"
     cache_key = f"{today_str}:{question}"
 
     fortune_cache = {}
@@ -335,27 +400,32 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await telegram_bot.send_message(
             chat_id=update.effective_chat.id,
             text=cached_answer,
-            parse_mode="HTML",
         )
         return
 
+    await telegram_bot.send_chat_action(update.effective_chat.id)
     answer = await gemini_bot.generate_fortune_async(
         name,
         birthdate,
         f"'{question}'에 해당하는 운세 알려줘.",
+        metadata={
+            "user_id": user_id,
+            "chat_id": str(update.effective_chat.id),
+        },
     )
 
-    user_cache[cache_key] = answer
-    storage.update("fortune_cache", fortune_cache)
+    if not gemini_bot.is_error_response(answer):
+        user_cache[cache_key] = answer
+        storage.update("fortune_cache", fortune_cache)
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=answer,
-        parse_mode="HTML",
     )
 
 async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id)
 
     user_json = {}
     if storage.isExist("user"):
@@ -373,49 +443,63 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     
+    if not context.args:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="질문을 입력해주세요. 예시: /chat 오늘 날씨 어때?",
+        )
+        return
+    
+    question = " ".join(context.args).strip()
+    if len(question) > MAX_CHAT_QUESTION_LENGTH:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"질문은 {MAX_CHAT_QUESTION_LENGTH:,}자 이내로 입력해 주세요.",
+        )
+        return
+
+    metadata = {
+        "type": "chat",
+        "user_id": user_id,
+        "chat_id": chat_id,
+    }
+    if question.casefold() in CHAT_RESET_WORDS:
+        deleted_count = await asyncio.to_thread(
+            gemini_bot.clear_chat_history,
+            metadata=metadata,
+        )
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"이전 AI 대화 {deleted_count}개를 지웠습니다.",
+        )
+        return
+
     cache = {}
     if storage.isExist("chat_cache"):
         cache = storage.get("chat_cache")
     else:
         storage.create("chat_cache")
 
-    if not context.args:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="질문을 입력해주세요. 예시: /chat 오늘 날씨 어때?",
-            parse_mode="HTML",
-        )
-        return
-    
-    question = " ".join(context.args).strip()
-
     user_cache = cache.setdefault(user_id, {})
     last_chat_datetime_str = user_cache.get("last_chat_datetime")
 
     now_datetime = MyUtils._get_datetime(fmt="%Y-%m-%d %H:%M:%S")
-    if user_id != admin_user_id and admin_chat_id != str(update.effective_chat.id) and last_chat_datetime_str:
+    if user_id != admin_user_id and admin_chat_id != chat_id and last_chat_datetime_str:
 
         last_chat_datetime = MyUtils._get_datetime(last_chat_datetime_str, "%Y-%m-%d %H:%M:%S")
         if now_datetime - last_chat_datetime < timedelta(minutes=1):
             await telegram_bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="1분에 1번씩만 질문할 수 있어요",
-                parse_mode="HTML",
             )
             return
     
     user_cache["last_chat_datetime"] = now_datetime.strftime("%Y-%m-%d %H:%M:%S")
     storage.update("chat_cache", cache)
 
-    answer = await gemini_bot.generate_text_async(
-        question,
-        metadata={
-            "type": "chat",
-            "user_id": user_id,
-        },
-    )
+    await telegram_bot.send_chat_action(update.effective_chat.id)
+    answer = await gemini_bot.generate_text_async(question, metadata=metadata)
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=answer,
-        parse_mode="HTML",
     )

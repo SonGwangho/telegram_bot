@@ -261,7 +261,6 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def korea_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STOCK_TARGETS = (
-        myService.StockTarget("KOSPI", "domestic"),  # 삼성전자
         myService.StockTarget("005930", "domestic"),  # 삼성전자
         myService.StockTarget("000660", "domestic"),  # SK하이닉스
         myService.StockTarget("042700", "domestic"),  # 한미반도체

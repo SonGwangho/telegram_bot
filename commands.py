@@ -20,19 +20,6 @@ import storage
 telegram_bot = TelegramBot()
 logger = logging.getLogger(__name__)
 
-STOCK_TARGETS = (
-    myService.StockTarget("069500", "domestic"),  # KODEX 200
-    myService.StockTarget("005930", "domestic"),  # 삼성전자
-    myService.StockTarget("000660", "domestic"),  # SK하이닉스
-    myService.StockTarget("042700", "domestic"),  # 한미반도체
-    myService.StockTarget("066570", "domestic"),  # LG전자
-    myService.StockTarget("005380", "domestic"),  # 현대차
-    myService.StockTarget("229200", "domestic"),  # KODEX 코스닥150
-    myService.StockTarget(".INX", "index"),       # S&P 500
-    myService.StockTarget("GOOG.O", "stock"),     # 알파벳 C
-    myService.StockTarget("QQQ.O", "etf"),
-    myService.StockTarget("SCHD.K", "etf"),
-)
 STOCK_CACHE_KEY = "stock_snapshot"
 STOCK_CACHE_SECONDS = 60
 MAX_CHAT_QUESTION_LENGTH = 2_000
@@ -54,7 +41,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/bb ["", "오늘", "내일", "모레"] - 삼성 야구 일정\n'
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
         '/lck ["", "오늘", "내일", "모레"] - 롤 경기 일정\n'
-        '/stock - 증시 정보\n'
+        '/ks - 증시 정보\n'
+        '/us - 미국 증시 정보\n'
         '/f - 오늘의 운세\n'
         '/chat 질문 - AI와 대화하기\n'
         '/chat 초기화 - 이전 AI 대화 지우기\n'
@@ -271,10 +259,32 @@ async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="HTML",
     )
 
+async def korea_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    STOCK_TARGETS = (
+        myService.StockTarget("KOSPI", "domestic"),  # 삼성전자
+        myService.StockTarget("005930", "domestic"),  # 삼성전자
+        myService.StockTarget("000660", "domestic"),  # SK하이닉스
+        myService.StockTarget("042700", "domestic"),  # 한미반도체
+        myService.StockTarget("005380", "domestic"),  # 현대차
+        myService.StockTarget("010120", "domestic"),  # LS ELECTRIC
+        myService.StockTarget("066570", "domestic"),  # LG전자
+        myService.StockTarget("069500", "domestic"),  # KODEX 200
+    )
+    await stock_command(update, context, "kr", STOCK_TARGETS)
 
-async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def us_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    STOCK_TARGETS = (
+        myService.StockTarget(".INX", "index"),       # S&P 500
+        myService.StockTarget("GOOG.O", "stock"),     # 알파벳 C
+        myService.StockTarget("QQQ.O", "etf"),
+        myService.StockTarget("SCHD.K", "etf"),
+        myService.StockTarget("JEPQ.O", "etf"),
+    )
+    await stock_command(update, context, "us", STOCK_TARGETS)
+
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stock_cache_key: str, stock_targets: list[myService.StockTarget] | None = None) -> None:
     now = datetime.now()
-    snapshot = context.bot_data.get(STOCK_CACHE_KEY)
+    snapshot = context.bot_data.get(stock_cache_key + STOCK_CACHE_KEY)
     cache_is_fresh = (
         isinstance(snapshot, dict)
         and isinstance(snapshot.get("fetched_at"), datetime)
@@ -289,7 +299,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         await telegram_bot.send_chat_action(update.effective_chat.id)
         quote_result, exchange_result = await asyncio.gather(
-            asyncio.to_thread(myService.fetch_quotes, STOCK_TARGETS),
+            asyncio.to_thread(myService.fetch_quotes, stock_targets),
             asyncio.to_thread(myService.fetch_usd_krw),
             return_exceptions=True,
         )
@@ -347,7 +357,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             converted_price = quote["value"] * usd_krw
             price = f'${quote["value"]:,.2f} (약 {converted_price:,.0f}원)'
 
-        lines.append(f'{name}: {price} ({change}) {quote["emoji"]}')
+        lines.append(f'{name} - {price} ({change}) {quote["emoji"]}')
 
     if failures:
         failed_codes = ", ".join(

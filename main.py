@@ -1,6 +1,6 @@
 from telegram.ext import Application, CommandHandler
 
-from commands import chat_command, fortune_command, help_command, start_command, register_command, bb_command, bbr_command, lck_command, stock_command
+from commands import chat_command, fortune_command, help_command, start_command, register_command, bb_command, bbr_command, lck_command, korea_stock_command, us_stock_command
 from config import telegram_token
 from gemini import gemini_bot
 
@@ -23,7 +23,8 @@ def main() -> None:
     application.add_handler(CommandHandler("bb", bb_command))
     application.add_handler(CommandHandler("bbr", bbr_command))
     application.add_handler(CommandHandler("lck", lck_command))
-    application.add_handler(CommandHandler("stock", stock_command))
+    application.add_handler(CommandHandler("ks", korea_stock_command))
+    application.add_handler(CommandHandler("us", us_stock_command))
     application.add_handler(CommandHandler("f", fortune_command))
     application.add_handler(CommandHandler("chat", chat_command))
 

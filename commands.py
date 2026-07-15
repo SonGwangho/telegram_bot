@@ -356,7 +356,6 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stoc
             converted_price = quote["value"] * usd_krw
             price = f'${quote["value"]:,.2f} (약 {converted_price:,.0f}원)'
 
-        logger.warning(f'quote: {quote}, name: {name}, price: {price}, change: {change}')
         lines.append(f'{quote["remark"] if len(quote["remark"]) > 0 else name} : {price} ({change}) {quote["emoji"]}')
 
     if failures:

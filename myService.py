@@ -42,6 +42,7 @@ class StockQuote(TypedDict):
 class StockTarget:
     code: str
     kind: StockKind
+    remark: str | None = ""
 
     def __post_init__(self) -> None:
         if not self.code.strip():
@@ -282,12 +283,14 @@ def fetch_quotes(
             index, target = futures[future]
             try:
                 quotes[index] = future.result()
+                quotes[index]["remark"] = target.remark
             except Exception as error:
                 reason = str(error) or error.__class__.__name__
                 logger.warning(
                     "Stock quote fetch failed: code=%s kind=%s error=%s",
                     target.code,
                     target.kind,
+                    target.remark,
                     reason,
                 )
                 failures[index] = StockFailure(target=target, reason=reason)

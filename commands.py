@@ -273,11 +273,11 @@ async def korea_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def us_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STOCK_TARGETS = (
-        myService.StockTarget(".INX", "index"),       # S&P 500
-        myService.StockTarget("GOOG.O", "stock"),     # 알파벳 C
-        myService.StockTarget("QQQ.O", "etf"),
-        myService.StockTarget("SCHD.K", "etf"),
-        myService.StockTarget("JEPQ.O", "etf"),
+        myService.StockTarget(".INX", "index", "S&P 500"),       # S&P 500
+        myService.StockTarget("GOOG.O", "stock", "알파벳 C"),     # 알파벳 C
+        myService.StockTarget("QQQ.O", "etf", "QQQ"),  # Invesco QQQ Trust
+        myService.StockTarget("SCHD.K", "etf", "SCHD"),  # Schwab U.S. Dividend Equity ETF
+        myService.StockTarget("JEPQ.O", "etf", "JEPQ"),
     )
     await stock_command(update, context, "us", STOCK_TARGETS)
 
@@ -356,7 +356,8 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stoc
             converted_price = quote["value"] * usd_krw
             price = f'${quote["value"]:,.2f} (약 {converted_price:,.0f}원)'
 
-        lines.append(f'{name} - {price} ({change}) {quote["emoji"]}')
+        logger.warning(f'quote: {quote}, name: {name}, price: {price}, change: {change}')
+        lines.append(f'{quote["remark"] if len(quote["remark"]) > 0 else name} : {price} ({change}) {quote["emoji"]}')
 
     if failures:
         failed_codes = ", ".join(

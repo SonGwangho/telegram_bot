@@ -169,5 +169,6 @@ app.add_handler(CommandHandler("echo", echo_command))
 - `/chat 질문`: `gemini_model`을 우선 사용하고 실패하면 `gemini_model_lite`로 한 번 대체합니다.
 - `/chat 초기화`: 현재 사용자와 현재 채팅방에 저장된 AI 대화 기록만 삭제합니다.
 - `/f [질문]`: 비용과 응답 속도를 고려해 `gemini_model_lite`를 사용합니다.
+- `/word`: `/reg`에 등록한 이름과 생년월일을 바탕으로 Gemini가 오늘의 맞춤 추천 문장과 관련 명언을 두 줄로 생성합니다. 같은 날짜와 사용자 정보에는 저장된 응답을 재사용합니다.
 
 Gemini 대화 기록은 `gemini_data_file`에 저장되고 최대 2,000건을 유지합니다. Gemini API 호출이 모두 실패하면 기존 동작처럼 `제미나이 API 에러 - 원문` 형식으로 오류를 반환합니다.

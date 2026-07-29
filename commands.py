@@ -8,6 +8,20 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from appointment import (
+    AppointmentFetchError,
+    fetch_next_appointment,
+    format_dday_message,
+    seoul_today,
+)
+from chat_history import (
+    ChatHistoryError,
+    MAX_MESSAGES_PER_CHAT,
+    build_chat_summary_prompt,
+    get_recent_chat_messages,
+    limit_summary_to_three_lines,
+    save_update_message,
+)
 from config import admin_user_id
 from config import admin_chat_id
 
@@ -16,6 +30,13 @@ from TelegramBot import TelegramBot
 from gemini import gemini_bot
 import myService
 import storage
+from word_recommendation import (
+    WORD_CACHE_NAME,
+    WORD_PROMPT_VERSION,
+    append_word_recommendation,
+    word_profile_fingerprint,
+    word_recent_recommendations,
+)
 
 telegram_bot = TelegramBot()
 logger = logging.getLogger(__name__)
@@ -37,6 +58,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "사용 가능한 명령어\n"
         "/help - 도움말 보기\n"
+        "/dday - 약속 남은 날짜\n"
         "/reg 이름 생년월일(YYYYMMDD) - 사용자 등록\n"
         '/bb ["", "오늘", "내일", "모레"] - 삼성 야구 일정\n'
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
@@ -44,8 +66,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/ks - 증시 정보\n'
         '/us - 미국 증시 정보\n'
         '/f - 오늘의 운세\n'
+        '/word - 오늘의 맞춤 추천 문장과 명언\n'
         '/chat 질문 - AI와 대화하기\n'
         '/chat 초기화 - 이전 AI 대화 지우기\n'
+        '/sum 숫자 - 최근 채팅 요약\n'
+        '/url URL - 단축 URL 생성\n'
     )
 
     print(f"help_command called by user_id={update.effective_user.id}")
@@ -55,6 +80,122 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         chat_id=update.effective_chat.id,
         text=help_text,
     )
+
+
+async def dday_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    today = seoul_today()
+
+    await telegram_bot.send_chat_action(chat_id)
+
+    try:
+        appointment = await asyncio.to_thread(
+            fetch_next_appointment,
+            today=today,
+        )
+    except AppointmentFetchError:
+        logger.warning("Failed to fetch the next appointment.", exc_info=True)
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text="약속 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            parse_mode=None,
+        )
+        return
+
+    if appointment is None:
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text="오늘 이후 등록된 약속이 없습니다.",
+            parse_mode=None,
+        )
+        return
+
+    await telegram_bot.send_message(
+        chat_id=chat_id,
+        text=format_dday_message(appointment, today=today),
+        parse_mode=None,
+    )
+
+
+async def remember_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    try:
+        await asyncio.to_thread(save_update_message, update)
+    except ChatHistoryError:
+        logger.exception("Failed to save a Telegram chat message.")
+
+
+async def sum_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if len(context.args) != 1:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"사용법: /sum 숫자 (1~{MAX_MESSAGES_PER_CHAT})",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        requested_count = int(context.args[0])
+    except ValueError:
+        requested_count = 0
+
+    if requested_count < 1 or requested_count > MAX_MESSAGES_PER_CHAT:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"숫자는 1부터 {MAX_MESSAGES_PER_CHAT} 사이로 입력해 주세요.",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        messages = await asyncio.to_thread(
+            get_recent_chat_messages,
+            update.effective_chat.id,
+            limit=requested_count,
+        )
+    except ChatHistoryError:
+        logger.exception("Failed to load Telegram chat history.")
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="채팅 기록을 불러오지 못했습니다.",
+            parse_mode=None,
+        )
+        return
+
+    if not messages:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="요약할 저장된 채팅이 없습니다.",
+            parse_mode=None,
+        )
+        return
+
+    await telegram_bot.send_chat_action(update.effective_chat.id)
+    summary = await gemini_bot.generate_text_async(
+        build_chat_summary_prompt(messages),
+        model_type=gemini_bot.lite_model,
+        save=False,
+        metadata={
+            "type": "chat_summary",
+            "chat_id": str(update.effective_chat.id),
+        },
+        history_limit=0,
+    )
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=limit_summary_to_three_lines(
+            summary,
+            is_error_response=gemini_bot.is_error_response(summary),
+        ),
+        parse_mode=None,
+    )
+
 
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -71,7 +212,9 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     name = args[0]
     birthdate = args[1]
     try:
-        datetime.strptime(birthdate, "%Y%m%d")
+        parsed_birthdate = datetime.strptime(birthdate, "%Y%m%d")
+        if parsed_birthdate.strftime("%Y%m%d") != birthdate:
+            raise ValueError
     except ValueError:
         await telegram_bot.send_message(
             chat_id=update.effective_chat.id,
@@ -275,6 +418,7 @@ async def us_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     STOCK_TARGETS = (
         myService.StockTarget(".INX", "index", "S&P 500"),       # S&P 500
         myService.StockTarget("GOOG.O", "stock", "알파벳 C"),     # 알파벳 C
+        myService.StockTarget("MSFT.O", "stock", "마이크로소프트"),     # 마이크로소프트
         myService.StockTarget("QQQ.O", "etf", "QQQ"),  # Invesco QQQ Trust
         myService.StockTarget("SCHD.K", "etf", "SCHD"),  # Schwab U.S. Dividend Equity ETF
         myService.StockTarget("JEPQ.O", "etf", "JEPQ"),
@@ -369,6 +513,108 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stoc
         text="\n".join(lines),
         parse_mode="HTML",
     )
+
+
+async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id)
+    today = MyUtils.getToday("yyyy-mm-dd")
+
+    if storage.isExist("user"):
+        user_data = storage.get("user")
+    else:
+        user_data = storage.create("user")
+
+    user = user_data.get(user_id) if isinstance(user_data, dict) else None
+    name = str(user.get("name") or "").strip() if isinstance(user, dict) else ""
+    birthdate = (
+        str(user.get("birthdate") or "").strip()
+        if isinstance(user, dict)
+        else ""
+    )
+    if not name or not birthdate:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="사용자 등록을 먼저 해주세요 /reg 이름 생년월일(YYYYMMDD)",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        parsed_birthdate = datetime.strptime(birthdate, "%Y%m%d")
+        if parsed_birthdate.strftime("%Y%m%d") != birthdate:
+            raise ValueError
+    except ValueError:
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="사용자 정보를 다시 등록해 주세요 /reg 이름 생년월일(YYYYMMDD)",
+            parse_mode=None,
+        )
+        return
+
+    profile_fingerprint = word_profile_fingerprint(name, birthdate)
+
+    if storage.isExist(WORD_CACHE_NAME):
+        word_cache = storage.get(WORD_CACHE_NAME)
+    else:
+        word_cache = storage.create(WORD_CACHE_NAME)
+
+    if not isinstance(word_cache, dict):
+        word_cache = {}
+
+    cached_entry = word_cache.get(user_id)
+    recent_recommendations = word_recent_recommendations(
+        cached_entry,
+        profile_fingerprint,
+    )
+    cache_is_current = (
+        isinstance(cached_entry, dict)
+        and cached_entry.get("date") == today
+        and cached_entry.get("profile_fingerprint") == profile_fingerprint
+        and cached_entry.get("prompt_version") == WORD_PROMPT_VERSION
+    )
+    if cache_is_current:
+        cached_answer = cached_entry.get("answer")
+        if isinstance(cached_answer, str) and cached_answer.strip():
+            await telegram_bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=cached_answer,
+                parse_mode=None,
+            )
+            return
+
+    await telegram_bot.send_chat_action(update.effective_chat.id)
+    answer = await gemini_bot.generate_daily_recommendation_async(
+        name=name,
+        birthdate=birthdate,
+        date=today,
+        recent_recommendations=recent_recommendations,
+        metadata={
+            "user_id": user_id,
+            "chat_id": chat_id,
+        },
+        save=False,
+    )
+
+    if not gemini_bot.is_error_response(answer):
+        word_cache[user_id] = {
+            "date": today,
+            "profile_fingerprint": profile_fingerprint,
+            "prompt_version": WORD_PROMPT_VERSION,
+            "answer": answer,
+            "recent_recommendations": append_word_recommendation(
+                recent_recommendations,
+                answer,
+            ),
+        }
+        storage.update(WORD_CACHE_NAME, word_cache)
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=answer,
+        parse_mode=None,
+    )
+
 
 async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -511,4 +757,46 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=answer,
+    )
+
+async def urlShortening_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await telegram_bot.send_chat_action(update.effective_chat.id)
+
+    url = context.args[0]
+    API_KEY = "01247af3-ee1a-459e-b177-5c6b99d98a6b"
+
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    res = requests.get(url, headers=headers, timeout=10)
+    res.raise_for_status()
+
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    if soup.title:
+        title = soup.title.text.strip()
+
+    res = requests.post(
+        "https://api.lrl.kr/v6/short",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY
+        },
+        json={
+            "url": url
+        },
+        timeout=10
+    )
+
+    data = res.json()
+
+    print(data)
+
+    answer = f"{title}\n단축 URL: {data['result']}"
+
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=(answer),
     )

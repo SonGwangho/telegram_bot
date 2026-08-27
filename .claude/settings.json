@@ -1,0 +1,46 @@
+{
+  "env": {
+    "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(codex --profile reviewer:*)",
+      "PowerShell(codex --profile reviewer *)",
+      "Bash(codex -p reviewer:*)",
+      "PowerShell(codex -p reviewer *)",
+      "Bash(codex review:*)",
+      "Bash(codex exec:*)",
+      "PowerShell(codex review *)",
+      "PowerShell(codex exec *)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "PowerShell(git status *)",
+      "PowerShell(git diff *)",
+      "PowerShell(git log *)",
+      "PowerShell(git add *)",
+      "PowerShell(git commit *)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python -m compileall:*)",
+      "PowerShell(python -m py_compile *)",
+      "PowerShell(python -m compileall *)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "PowerShell(git push --force *)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./data/**)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "PowerShell(git push *)",
+      "Bash(python main.py:*)",
+      "PowerShell(python main.py *)",
+      "Bash(pip install:*)",
+      "PowerShell(pip install *)"
+    ]
+  }
+}

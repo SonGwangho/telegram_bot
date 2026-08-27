@@ -14,12 +14,24 @@ from appointment import (
     format_dday_message,
     seoul_today,
 )
+from adjustment import (
+    MAX_AMOUNT as ADJ_MAX_AMOUNT,
+    AdjustmentError,
+    add_expense,
+    calculate_settlement,
+    create_room,
+    delete_room,
+    format_room_details,
+    format_settlement,
+    get_room_details,
+    remove_expense,
+)
 from chat_history import (
     ChatHistoryError,
     MAX_MESSAGES_PER_CHAT,
     build_chat_summary_prompt,
+    format_chat_summary,
     get_recent_chat_messages,
-    limit_summary_to_three_lines,
     save_update_message,
 )
 from config import admin_user_id
@@ -28,6 +40,7 @@ from config import admin_chat_id
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
 from gemini import gemini_bot
+import hijack
 import myService
 import storage
 from word_recommendation import (
@@ -45,6 +58,23 @@ STOCK_CACHE_KEY = "stock_snapshot"
 STOCK_CACHE_SECONDS = 60
 MAX_CHAT_QUESTION_LENGTH = 2_000
 CHAT_RESET_WORDS = {"reset", "초기화", "대화초기화"}
+UBER_TRACKER_URL = "https://diablo2.io/dclonetracker.php"
+UBER_REGION_NAMES = {
+    "Europe": "유럽",
+    "Americas": "미국",
+    "Asia": "한국",
+}
+UBER_MODE_TITLES = (
+    ("래더", "RotW Softcore Ladder"),
+    ("스탠", "RotW Softcore Non-Ladder"),
+)
+UBER_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/138.0.0.0 Safari/537.36"
+    ),
+}
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -62,15 +92,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/reg 이름 생년월일(YYYYMMDD) - 사용자 등록\n"
         '/bb ["", "오늘", "내일", "모레"] - 삼성 야구 일정\n'
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
-        '/lck ["", "오늘", "내일", "모레"] - 롤 경기 일정\n'
         '/ks - 증시 정보\n'
         '/us - 미국 증시 정보\n'
         '/f - 오늘의 운세\n'
         '/word - 오늘의 맞춤 추천 문장과 명언\n'
-        '/chat 질문 - AI와 대화하기\n'
-        '/chat 초기화 - 이전 AI 대화 지우기\n'
-        '/sum 숫자 - 최근 채팅 요약\n'
-        '/url URL - 단축 URL 생성\n'
+        '/chat ["초기화", "질문"] - AI 대화 및 초기화\n'
+        '/sum 숫자 - 최근 메시지를 고둥이가 요약\n'
+        '/uber - 디아블로 우버 진행도\n'
+        '/adj - 모임 정산 생성, 결제 등록, 마감\n'
     )
 
     print(f"help_command called by user_id={update.effective_user.id}")
@@ -79,6 +108,232 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
         text=help_text,
+    )
+
+
+ADJ_USAGE = (
+    "정산 사용법\n"
+    "/adj 생성 모임명 인원수\n"
+    "/adj 모임명 이름 금액 [메모]\n"
+    "/adj 모임명 - 현재 내역 조회\n"
+    "/adj 모임명 제거 숫자코드\n"
+    "/adj 마감 모임명\n"
+    "※ 입력하지 않은 사람은 미입력 인원으로 자동 계산됩니다."
+)
+
+
+def _strip_matching_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1].strip()
+    return value
+
+
+def _parse_adj_number(value: str, label: str) -> int:
+    normalized = _strip_matching_quotes(value).replace(",", "").replace("_", "")
+    if label == "금액":
+        normalized = normalized.removeprefix("₩").removesuffix("원")
+    if not normalized.isdecimal():
+        raise AdjustmentError(f"{label}은 0 이상의 숫자로 입력해 주세요.")
+    number = int(normalized)
+    if label == "금액" and number > ADJ_MAX_AMOUNT:
+        raise AdjustmentError(f"금액은 {ADJ_MAX_AMOUNT:,}원 이하로 입력해 주세요.")
+    return number
+
+
+async def adj_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = [_strip_matching_quotes(arg) for arg in context.args]
+
+    try:
+        if len(args) == 3 and args[0] == "생성":
+            room_name = args[1]
+            participant_count = _parse_adj_number(args[2], "인원수")
+            create_room(
+                chat_id,
+                room_name,
+                participant_count,
+                created_by=update.effective_user.id,
+            )
+            await telegram_bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"'{room_name}' 정산을 만들었습니다. ({participant_count}명)\n"
+                    f"결제 등록: /adj {room_name} 이름 금액 [메모]\n"
+                    "입력하지 않은 사람은 마감할 때 미입력 인원으로 계산됩니다."
+                ),
+                parse_mode=None,
+            )
+            return
+
+        if len(args) == 2 and args[0] == "마감":
+            room_name = args[1]
+            result = calculate_settlement(chat_id, room_name)
+
+            # 결과 메시지가 전송된 뒤에만 정산 데이터를 삭제한다.
+            await telegram_bot.send_message(
+                chat_id=chat_id,
+                text=format_settlement(result),
+                parse_mode=None,
+            )
+            try:
+                delete_room(chat_id, room_name)
+            except (AdjustmentError, OSError, ValueError):
+                logger.exception("Failed to clear adjustment room after closing it.")
+                await telegram_bot.send_message(
+                    chat_id=chat_id,
+                    text="정산 결과는 전송했지만 저장 내역을 삭제하지 못했습니다.",
+                    parse_mode=None,
+                )
+            return
+
+        if len(args) == 1:
+            details = get_room_details(chat_id, args[0])
+            await telegram_bot.send_message(
+                chat_id=chat_id,
+                text=format_room_details(details),
+                parse_mode=None,
+            )
+            return
+
+        if len(args) == 3 and args[1] == "제거":
+            room_name = args[0]
+            entry_code = args[2]
+            removed, registered, expected, total = remove_expense(
+                chat_id,
+                room_name,
+                entry_code,
+            )
+            memo_suffix = f" {removed.memo}" if removed.memo else ""
+            await telegram_bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"[{room_name}] [{removed.code}] 내역을 제거했습니다.\n"
+                    f"{removed.member_name} {removed.amount:,}원{memo_suffix}\n"
+                    f"결제자 {registered}/{expected}명 · 전체 {total:,}원"
+                ),
+                parse_mode=None,
+            )
+            return
+
+        if len(args) >= 3:
+            room_name, member_name, amount_text = args[:3]
+            amount = _parse_adj_number(amount_text, "금액")
+            memo = _strip_matching_quotes(" ".join(context.args[3:]))
+            entry_code, cumulative, registered, expected, total = add_expense(
+                chat_id,
+                room_name,
+                member_name,
+                amount,
+                memo,
+            )
+            memo_suffix = f" · {memo}" if memo else ""
+            await telegram_bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"[{room_name}] [{entry_code}] {member_name} "
+                    f"{amount:,}원 반영{memo_suffix}\n"
+                    f"누적 {cumulative:,}원 · 결제자 {registered}/{expected}명 · "
+                    f"전체 {total:,}원"
+                ),
+                parse_mode=None,
+            )
+            return
+
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text=ADJ_USAGE,
+            parse_mode=None,
+        )
+    except (AdjustmentError, OSError, ValueError) as error:
+        logger.warning("Adjustment command failed: %s", error)
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text=str(error),
+            parse_mode=None,
+        )
+
+
+def fetch_uber_progress() -> list[tuple[str, list[tuple[str, str, str]]]]:
+    response = requests.get(
+        UBER_TRACKER_URL,
+        headers=UBER_REQUEST_HEADERS,
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    member_tables = {}
+    for card in soup.select(".z-dclone-table-card"):
+        heading = card.select_one("h1")
+        table = card.select_one("table#memberlist")
+        if heading and table:
+            member_tables[heading.get_text(" ", strip=True)] = table
+
+    progress_by_mode = []
+    for mode_name, table_title in UBER_MODE_TITLES:
+        table = member_tables.get(table_title)
+        if table is None:
+            raise ValueError(f"{mode_name} 진행도 테이블을 찾지 못했습니다.")
+
+        progress_values = []
+        for row in table.select("tbody tr"):
+            cells = row.find_all("td", recursive=False)
+            if len(cells) < 3:
+                continue
+
+            code = cells[0].find("code")
+            region_text = cells[1].get_text(" ", strip=True)
+            last_updated = cells[2].get_text(" ", strip=True)
+            region_name = next(
+                (
+                    korean_name
+                    for region_key, korean_name in UBER_REGION_NAMES.items()
+                    if region_key in region_text
+                ),
+                None,
+            )
+            if code and region_name and last_updated:
+                progress_values.append(
+                    (region_name, code.get_text(strip=True), last_updated)
+                )
+
+        found_regions = {region for region, _, _ in progress_values}
+        if found_regions != set(UBER_REGION_NAMES.values()):
+            raise ValueError(f"{mode_name} 우버 진행도 3개를 모두 찾지 못했습니다.")
+
+        progress_by_mode.append((mode_name, progress_values))
+
+    return progress_by_mode
+
+
+async def uber_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    await telegram_bot.send_chat_action(chat_id)
+
+    try:
+        progress_by_mode = await asyncio.to_thread(fetch_uber_progress)
+    except (requests.RequestException, ValueError):
+        logger.warning("Failed to fetch Uber progress.", exc_info=True)
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text="우버 진행도를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            parse_mode=None,
+        )
+        return
+
+    progress_text = "\n\n".join(
+        f"[{mode_name}]\n"
+        + "\n".join(
+            f"{region} - {value} ({last_updated})"
+            for region, value, last_updated in progress_values
+        )
+        for mode_name, progress_values in progress_by_mode
+    )
+    await telegram_bot.send_message(
+        chat_id=chat_id,
+        text=f"우버 진행도\n\n{progress_text}",
+        parse_mode=None,
     )
 
 
@@ -125,6 +380,19 @@ async def remember_message(
         await asyncio.to_thread(save_update_message, update)
     except ChatHistoryError:
         logger.exception("Failed to save a Telegram chat message.")
+
+
+async def hijack_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+
+    message = update.effective_message
+    if message is None:
+        return
+
+    await hijack.hijack_message(message)
 
 
 async def sum_command(
@@ -183,13 +451,14 @@ async def sum_command(
         metadata={
             "type": "chat_summary",
             "chat_id": str(update.effective_chat.id),
+            "message_count": len(messages),
         },
         history_limit=0,
     )
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
-        text=limit_summary_to_three_lines(
+        text=format_chat_summary(
             summary,
             is_error_response=gemini_bot.is_error_response(summary),
         ),
@@ -359,49 +628,6 @@ async def bbr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
         
 
-async def lck_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-
-    res = requests.get("https://esports-api.game.naver.com/service/v1/predict/leagueId/lck_2026", timeout=10)
-    res.raise_for_status()
-
-    json = res.json()
-    matches = json["content"]["matches"]
-
-    matches = list(filter(lambda x: x["matchStatus"] != "RESULT", matches))
-
-    year = MyUtils.getYear()
-    month = MyUtils.getMonth()
-    day = MyUtils.getDay()
-
-    today = 0
-    if args:
-        if args[0] == "내일":
-            today += 2
-            day += 1
-        elif args[0] == "모레":
-            today += 4
-            day += 2
-        elif args[0].isdigit():
-            today += int(args[0]) * 2
-            day += int(args[0])
-    
-
-    away = [matches[today]["awayTeam"]["name"], matches[today + 1]["awayTeam"]["name"]]
-    home = [matches[today]["homeTeam"]["name"], matches[today + 1]["homeTeam"]["name"]]
-
-    return_text = f'''
-<b>{year}년 {month}월 {day}일 경기</b>
-1경기 {away[0]} vs {home[0]}
-2경기 {away[1]} vs {home[1]}
-    '''
-    
-    await telegram_bot.send_message(
-        chat_id=update.effective_chat.id,
-        text = return_text,
-        parse_mode="HTML",
-    )
-
 async def korea_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STOCK_TARGETS = (
         myService.StockTarget("005930", "domestic"),  # 삼성전자
@@ -418,10 +644,11 @@ async def us_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     STOCK_TARGETS = (
         myService.StockTarget(".INX", "index", "S&P 500"),       # S&P 500
         myService.StockTarget("GOOG.O", "stock", "알파벳 C"),     # 알파벳 C
-        myService.StockTarget("MSFT.O", "stock", "마이크로소프트"),     # 마이크로소프트
+        # myService.StockTarget("MSFT.O", "stock", "마이크로소프트"),     # 마이크로소프트
         myService.StockTarget("QQQ.O", "etf", "QQQ"),  # Invesco QQQ Trust
         myService.StockTarget("SCHD.K", "etf", "SCHD"),  # Schwab U.S. Dividend Equity ETF
         myService.StockTarget("JEPQ.O", "etf", "JEPQ"),
+        myService.StockTarget("VOO", "etf", "VOO"),
     )
     await stock_command(update, context, "us", STOCK_TARGETS)
 
@@ -763,38 +990,9 @@ async def urlShortening_command(update: Update, context: ContextTypes.DEFAULT_TY
     await telegram_bot.send_chat_action(update.effective_chat.id)
 
     url = context.args[0]
-    API_KEY = "01247af3-ee1a-459e-b177-5c6b99d98a6b"
+    result = MyUtils.urlShortening(url)
 
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    res = requests.get(url, headers=headers, timeout=10)
-    res.raise_for_status()
-
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    if soup.title:
-        title = soup.title.text.strip()
-
-    res = requests.post(
-        "https://api.lrl.kr/v6/short",
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY
-        },
-        json={
-            "url": url
-        },
-        timeout=10
-    )
-
-    data = res.json()
-
-    print(data)
-
-    answer = f"{title}\n단축 URL: {data['result']}"
+    answer = f"{result['title']}\n단축 URL: {result['url']}"
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,

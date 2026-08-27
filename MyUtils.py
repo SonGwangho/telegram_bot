@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
 import requests
 
 class MyUtils:
@@ -74,3 +75,43 @@ class MyUtils:
         json = res.json()
         usd = json["country"][1]["value"]
         return float(usd.replace(",", ""))
+
+    @staticmethod
+    def urlShortening(url):
+        API_KEY = "01247af3-ee1a-459e-b177-5c6b99d98a6b"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        try:
+
+            res = requests.get(url, headers=headers, timeout=10)
+            res.raise_for_status()
+        
+            soup = BeautifulSoup(res.text, "html.parser")
+        
+            if soup.title:
+                title = soup.title.text.strip()
+        except:
+            title = "제목 불러오기 실패"
+    
+        res = requests.post(
+            "https://api.lrl.kr/v6/short",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": API_KEY
+            },
+            json={
+                "url": url
+            },
+            timeout=10
+        )
+    
+        data = res.json()
+
+        return {
+            "title": title,
+            "url": data['result'],
+            "original_url": url
+        }

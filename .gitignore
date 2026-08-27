@@ -219,3 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 __pycache__/commands.cpython-314.pyc
+
+# AI 협업 산출물 (Codex 리뷰/QA 임시 파일)
+.codex-review.md
+.codex-qa-prompt.txt

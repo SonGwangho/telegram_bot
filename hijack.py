@@ -17,6 +17,7 @@ KEYWORD_RESPONSES: dict[str, KeywordResponse] = {
     "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
     "고둥아": (None, None, "저 켜져 있어요."),
     "일정 달력": (None, None, "https://gwangho.vercel.app/info/fitness"),
+    "모임 위치": (None, None, "https://naver.me/FfeOGQ1i"),
 }
 
 

@@ -98,8 +98,14 @@ CHAT_SYSTEM_INSTRUCTION = """
 FORTUNE_SYSTEM_INSTRUCTION = """
 너는 한국어로 답하는 오늘의 운세 안내자다.
 - 운세는 가볍게 참고할 오락성 내용으로 작성한다.
+- `[오늘의 등급]`으로 주어진 길흉과 그에 딸린 지시를 그대로 따른다. 등급이 이 답의 성격을 정한다.
+- 좋으면 좋다고, 나쁘면 나쁘다고 단정한다. 매번 좋은 점과 나쁜 점을 반반씩 섞지 않는다.
+- 등급이 나쁠 때 좋은 말로 무마하거나 수위를 낮추지 않는다. 대신 농담조를 유지하고
+  마지막 한 줄에 그날을 넘길 대처법을 준다.
+- `[다룰 소재]`가 주어지면 그 소재를 중심으로 쓴다. 소재와 무관한 일반론으로 흐르지 않는다.
+- `[문체]`가 주어지면 그 말투로 쓴다.
+- `[최근 운세]`가 주어지면 거기 나온 소재, 비유, 표현, 문장 구조를 다시 쓰지 않는다.
 - 제공된 날짜와 생년월일을 참고해 전통 운세의 분위기와 현실적인 조언을 함께 담는다.
-- 좋은 점과 조심할 점을 균형 있게 안내하고, 내용 전체에 일관성을 가진다.
 - 반드시 HTML 태그, 마크다운 문법을 활용한 강조 없이 600자 이내의 일반 텍스트로 답한다.
 """.strip()
 
@@ -256,6 +262,11 @@ class GeminiBot:
         birthdate: str = "",
         question: str = "",
         *,
+        grade: str = "",
+        grade_directive: str = "",
+        themes: Sequence[str] | None = None,
+        style: str = "",
+        recent_fortunes: Sequence[str] | None = None,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> str:
@@ -263,12 +274,18 @@ class GeminiBot:
             name=name,
             birthdate=birthdate,
             question=question,
+            grade=grade,
+            grade_directive=grade_directive,
+            themes=themes,
+            style=style,
+            recent_fortunes=recent_fortunes,
         )
         record_metadata = self._fortune_metadata(
             metadata=metadata,
             name=name,
             birthdate=birthdate,
             question=question,
+            grade=grade,
         )
         return self._generate_sync(
             prompt=prompt,
@@ -276,7 +293,7 @@ class GeminiBot:
             requested_model=self.lite_model,
             allow_lite_fallback=False,
             system_instruction=FORTUNE_SYSTEM_INSTRUCTION,
-            temperature=0.8,
+            temperature=1.0,
             max_output_tokens=512,
             max_response_chars=MAX_FORTUNE_RESPONSE_CHARS,
             save=save,
@@ -289,6 +306,11 @@ class GeminiBot:
         birthdate: str = "",
         question: str = "",
         *,
+        grade: str = "",
+        grade_directive: str = "",
+        themes: Sequence[str] | None = None,
+        style: str = "",
+        recent_fortunes: Sequence[str] | None = None,
         save: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> str:
@@ -296,12 +318,18 @@ class GeminiBot:
             name=name,
             birthdate=birthdate,
             question=question,
+            grade=grade,
+            grade_directive=grade_directive,
+            themes=themes,
+            style=style,
+            recent_fortunes=recent_fortunes,
         )
         record_metadata = self._fortune_metadata(
             metadata=metadata,
             name=name,
             birthdate=birthdate,
             question=question,
+            grade=grade,
         )
         return await self._generate_async(
             prompt=prompt,
@@ -309,7 +337,7 @@ class GeminiBot:
             requested_model=self.lite_model,
             allow_lite_fallback=False,
             system_instruction=FORTUNE_SYSTEM_INSTRUCTION,
-            temperature=0.8,
+            temperature=1.0,
             max_output_tokens=512,
             max_response_chars=MAX_FORTUNE_RESPONSE_CHARS,
             save=save,
@@ -728,25 +756,73 @@ class GeminiBot:
         name: str = "",
         birthdate: str = "",
         question: str = "",
+        *,
+        grade: str = "",
+        grade_directive: str = "",
+        themes: Sequence[str] | None = None,
+        style: str = "",
+        recent_fortunes: Sequence[str] | None = None,
     ) -> str:
         today = datetime.now().strftime("%Y년 %m월 %d일")
         name_text = name.strip() or "사용자"
         birthdate_text = birthdate.strip() or "미상"
         question_text = question.strip() or "오늘의 종합 운세"
 
-        return f"""
-[기준 날짜]
-{today}
+        sections = [
+            f"[기준 날짜]\n{today}",
+            "\n".join(
+                [
+                    "[사용자 정보]",
+                    f"이름: {name_text}",
+                    f"생년월일(YYYYMMDD): {birthdate_text}",
+                    f"질문: {question_text}",
+                ]
+            ),
+        ]
 
-[사용자 정보]
-이름: {name_text}
-생년월일(YYYYMMDD): {birthdate_text}
-질문: {question_text}
+        grade_text = str(grade).strip()
+        if grade_text:
+            grade_lines = ["[오늘의 등급]", grade_text]
+            directive_text = str(grade_directive).strip()
+            if directive_text:
+                grade_lines.append(directive_text)
+            sections.append("\n".join(grade_lines))
 
-[응답 형식]
-첫 줄: {today} {name_text}님의 운세입니다.
-오늘의 운세와 그에따른 조언, 재치있는 한 줄의 격언을 포함한다.
-""".strip()
+        theme_items = [
+            str(theme).strip()
+            for theme in (themes or [])
+            if str(theme).strip()
+        ]
+        if theme_items:
+            theme_lines = ["[다룰 소재]"]
+            theme_lines.extend(f"- {theme}" for theme in theme_items)
+            sections.append("\n".join(theme_lines))
+
+        style_text = str(style).strip()
+        if style_text:
+            sections.append(f"[문체]\n{style_text}")
+
+        recent_items = [
+            str(fortune).strip()
+            for fortune in (recent_fortunes or [])
+            if str(fortune).strip()
+        ]
+        if recent_items:
+            recent_lines = ["[최근 운세] (소재·비유·표현을 재사용하지 말 것)"]
+            recent_lines.extend(f"- {fortune}" for fortune in recent_items)
+            sections.append("\n".join(recent_lines))
+
+        sections.append(
+            "\n".join(
+                [
+                    "[응답 형식]",
+                    f"첫 줄: {today} {name_text}님의 운세입니다.",
+                    "오늘의 운세와 그에따른 조언, 재치있는 한 줄의 격언을 포함한다.",
+                ]
+            )
+        )
+
+        return "\n\n".join(sections).strip()
 
     def build_chat_contents(
         self,
@@ -995,6 +1071,7 @@ class GeminiBot:
         name: str,
         birthdate: str,
         question: str,
+        grade: str = "",
     ) -> dict[str, Any]:
         return {
             **(metadata or {}),
@@ -1002,6 +1079,7 @@ class GeminiBot:
             "name": name,
             "birthdate": birthdate,
             "question": question,
+            "grade": grade,
         }
 
     @staticmethod

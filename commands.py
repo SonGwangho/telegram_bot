@@ -43,6 +43,13 @@ from gemini import gemini_bot
 import hijack
 import myService
 import storage
+from fortune import (
+    FORTUNE_CACHE_NAME,
+    append_fortune_answer,
+    fortune_profile_fingerprint,
+    normalize_fortune_entry,
+    roll_fortune,
+)
 from word_recommendation import (
     WORD_CACHE_NAME,
     WORD_PROMPT_VERSION,
@@ -867,16 +874,22 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     today_str = MyUtils.getToday("yyyy-mm-dd")
     question = " ".join(context.args).strip() if context.args else "오늘의 종합 운세"
-    cache_key = f"{today_str}:{question}"
+    profile_fingerprint = fortune_profile_fingerprint(name, birthdate)
 
-    fortune_cache = {}
-    if storage.isExist("fortune_cache"):
-        fortune_cache = storage.get("fortune_cache")
+    if storage.isExist(FORTUNE_CACHE_NAME):
+        fortune_cache = storage.get(FORTUNE_CACHE_NAME)
     else:
-        storage.create("fortune_cache")
+        fortune_cache = storage.create(FORTUNE_CACHE_NAME)
 
-    user_cache = fortune_cache.setdefault(user_id, {})
-    cached_answer = user_cache.get(cache_key)
+    if not isinstance(fortune_cache, dict):
+        fortune_cache = {}
+
+    user_entry = normalize_fortune_entry(
+        fortune_cache.get(user_id),
+        date=today_str,
+        profile_fingerprint=profile_fingerprint,
+    )
+    cached_answer = user_entry["answers"].get(question)
 
     if cached_answer:
         await telegram_bot.send_message(
@@ -885,11 +898,19 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    # 길흉은 모델이 아니라 코드가 정한다. 같은 날 같은 질문이면 항상 같은 등급이 나온다.
+    roll = roll_fortune(user_id, today_str, question)
+
     await telegram_bot.send_chat_action(update.effective_chat.id)
     answer = await gemini_bot.generate_fortune_async(
         name,
         birthdate,
         f"'{question}'에 해당하는 운세 알려줘.",
+        grade=roll["grade"],
+        grade_directive=roll["grade_directive"],
+        themes=roll["themes"],
+        style=roll["style"],
+        recent_fortunes=user_entry["recent"],
         metadata={
             "user_id": user_id,
             "chat_id": str(update.effective_chat.id),
@@ -897,8 +918,10 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     if not gemini_bot.is_error_response(answer):
-        user_cache[cache_key] = answer
-        storage.update("fortune_cache", fortune_cache)
+        user_entry["answers"][question] = answer
+        user_entry["recent"] = append_fortune_answer(user_entry["recent"], answer)
+        fortune_cache[user_id] = user_entry
+        storage.update(FORTUNE_CACHE_NAME, fortune_cache)
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,

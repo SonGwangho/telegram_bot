@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timedelta
 
 import requests
-from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -40,9 +39,12 @@ from config import admin_chat_id
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
 from gemini import gemini_bot
+import baseball_service
 import hijack
 import myService
+import stock_service
 import storage
+import uber_service
 from fortune import (
     FORTUNE_CACHE_NAME,
     append_fortune_answer,
@@ -61,27 +63,8 @@ from word_recommendation import (
 telegram_bot = TelegramBot()
 logger = logging.getLogger(__name__)
 
-STOCK_CACHE_KEY = "stock_snapshot"
-STOCK_CACHE_SECONDS = 60
 MAX_CHAT_QUESTION_LENGTH = 2_000
 CHAT_RESET_WORDS = {"reset", "초기화", "대화초기화"}
-UBER_TRACKER_URL = "https://diablo2.io/dclonetracker.php"
-UBER_REGION_NAMES = {
-    "Europe": "유럽",
-    "Americas": "미국",
-    "Asia": "한국",
-}
-UBER_MODE_TITLES = (
-    ("래더", "RotW Softcore Ladder"),
-    ("스탠", "RotW Softcore Non-Ladder"),
-)
-UBER_REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/138.0.0.0 Safari/537.36"
-    ),
-}
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -261,65 +244,12 @@ async def adj_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 
-def fetch_uber_progress() -> list[tuple[str, list[tuple[str, str, str]]]]:
-    response = requests.get(
-        UBER_TRACKER_URL,
-        headers=UBER_REQUEST_HEADERS,
-        timeout=10,
-    )
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    member_tables = {}
-    for card in soup.select(".z-dclone-table-card"):
-        heading = card.select_one("h1")
-        table = card.select_one("table#memberlist")
-        if heading and table:
-            member_tables[heading.get_text(" ", strip=True)] = table
-
-    progress_by_mode = []
-    for mode_name, table_title in UBER_MODE_TITLES:
-        table = member_tables.get(table_title)
-        if table is None:
-            raise ValueError(f"{mode_name} 진행도 테이블을 찾지 못했습니다.")
-
-        progress_values = []
-        for row in table.select("tbody tr"):
-            cells = row.find_all("td", recursive=False)
-            if len(cells) < 3:
-                continue
-
-            code = cells[0].find("code")
-            region_text = cells[1].get_text(" ", strip=True)
-            last_updated = cells[2].get_text(" ", strip=True)
-            region_name = next(
-                (
-                    korean_name
-                    for region_key, korean_name in UBER_REGION_NAMES.items()
-                    if region_key in region_text
-                ),
-                None,
-            )
-            if code and region_name and last_updated:
-                progress_values.append(
-                    (region_name, code.get_text(strip=True), last_updated)
-                )
-
-        found_regions = {region for region, _, _ in progress_values}
-        if found_regions != set(UBER_REGION_NAMES.values()):
-            raise ValueError(f"{mode_name} 우버 진행도 3개를 모두 찾지 못했습니다.")
-
-        progress_by_mode.append((mode_name, progress_values))
-
-    return progress_by_mode
-
-
 async def uber_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     await telegram_bot.send_chat_action(chat_id)
 
     try:
-        progress_by_mode = await asyncio.to_thread(fetch_uber_progress)
+        progress_by_mode = await uber_service.get_progress()
     except (requests.RequestException, ValueError):
         logger.warning("Failed to fetch Uber progress.", exc_info=True)
         await telegram_bot.send_message(
@@ -498,18 +428,11 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    user_data = {}
-    if storage.isExist("user"):
-        user_data = storage.get("user")
-    else:
-        storage.create("user")
-    
-    user_data[user_id] = {
+    user = {
         "name": name,
         "birthdate": birthdate,
     }
-
-    storage.update("user", user_data)
+    await asyncio.to_thread(storage.update_entry, "user", user_id, user)
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
@@ -518,122 +441,30 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 async def bb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
+    if update.effective_chat is None:
+        return
 
-    res = requests.get("https://www.samsunglions.com/score/score_index.asp", timeout=10)
-    res.raise_for_status()
-
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    table = soup.select("#infodiv > div.mCalendar > div.result > div > div.cal > table")
-    games = table[0].select("td.game")
-
-    month = MyUtils.getMonth()
-    today = MyUtils.getDay()
-    if args:
-        if args[0] == "내일":
-            today += 1
-        elif args[0] == "모레":
-            today += 2
-
-    today_game = None
-
-    for game in games:
-        em = game.select_one("em.d")
-        day = em.contents[0].strip()
-
-        if day == str(today):
-            imgs = game.select("span.i img")
-            team1 = imgs[0]["alt"]
-            team2 = imgs[1]["alt"]
-
-            info = game.select_one("span.s").get_text(strip=True)
-            today_game = f"""
-<b>{month}월 {day}일 경기</b>
-{team1} vs {team2}
-<b>{info}</b>
-"""
-            break
-
-    if today_game:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=today_game,
-            parse_mode="HTML",
-        )
-    else:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="경기가 없습니다.",
-        )
-
-async def bbr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-
-    params = {
-        "upperCategoryId": "kbaseball",
-        "categoryIds": ",kbo,kbs,kbaseballetc,premier12,apbc",
-        "date": MyUtils.getToday(),
-    }
-
-    target_date = args[0] if args else MyUtils.getYesterday("%Y-%m-%d")
-
-    res = requests.get("https://api-gw.sports.naver.com/schedule/calendar", params=params, timeout=10)
-    res.raise_for_status()
-
-    json = res.json()
-    data = json["result"]
-
-    matches = data["dates"]
-
-    game_id = None
-    game_infos = None
-    for m in matches:
-        if m["ymd"] == target_date:
-            game_infos = m["gameInfos"]
-            break
-
-    if not game_infos:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="경기가 없습니다.",
-        )
-
-    for g in game_infos:
-        if g["homeTeamCode"] == "SS" or g["awayTeamCode"] == "SS":
-            game_id = g["gameId"]
-            break
-
-    if not game_id:
-        await telegram_bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="경기가 없습니다.",
-        )
-
-    info_url = f"https://api-gw.sports.naver.com/common-poll/question/game/{game_id}/info"
-    res = requests.get(info_url)
-
-    json = res.json()
-    data = json["result"]
-    game_info = data["gameInfo"]
-
-    homeTeamName = game_info["homeTeamName"]
-    awayTeamName = game_info["awayTeamName"]
-
-    homeTeamScore = game_info["homeTeamScore"]
-    awayTeamScore = game_info["awayTeamScore"]
-    
-    game_result = f'''
-<b>{target_date}</b>
-{homeTeamName} {homeTeamScore} : {awayTeamScore} {awayTeamName}
-'''
-
+    day = context.args[0] if context.args else "오늘"
+    text = await baseball_service.get_schedule_message(day)
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
-        text=game_result,
+        text=text,
         parse_mode="HTML",
     )
-        
+
+
+async def bbr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat is None:
+        return
+
+    target_date = context.args[0] if context.args else ""
+    text = await baseball_service.get_result_message(target_date)
+    await telegram_bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode="HTML",
+    )
+
 
 async def korea_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STOCK_TARGETS = (
@@ -659,58 +490,23 @@ async def us_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     await stock_command(update, context, "us", STOCK_TARGETS)
 
-async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stock_cache_key: str, stock_targets: list[myService.StockTarget] | None = None) -> None:
-    now = datetime.now()
-    snapshot = context.bot_data.get(stock_cache_key + STOCK_CACHE_KEY)
-    cache_is_fresh = (
-        isinstance(snapshot, dict)
-        and isinstance(snapshot.get("fetched_at"), datetime)
-        and (now - snapshot["fetched_at"]).total_seconds() < STOCK_CACHE_SECONDS
-    )
-
-    if cache_is_fresh:
-        quotes = snapshot["quotes"]
-        failures = snapshot["failures"]
-        usd_krw = snapshot["usd_krw"]
-        fetched_at = snapshot["fetched_at"]
-    else:
-        await telegram_bot.send_chat_action(update.effective_chat.id)
-        quote_result, exchange_result = await asyncio.gather(
-            asyncio.to_thread(myService.fetch_quotes, stock_targets),
-            asyncio.to_thread(myService.fetch_usd_krw),
-            return_exceptions=True,
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, stock_cache_key: str, stock_targets: list[myService.StockTarget] | tuple[myService.StockTarget, ...] | None = None) -> None:
+    await telegram_bot.send_chat_action(update.effective_chat.id)
+    try:
+        snapshot = await stock_service.get_snapshot(stock_cache_key, stock_targets)
+    except myService.StockFetchError as error:
+        logger.warning("Stock snapshot fetch failed: %s", error)
+        await telegram_bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=str(error),
+            parse_mode=None,
         )
+        return
 
-        if isinstance(quote_result, Exception):
-            logger.error("Stock snapshot fetch failed: %s", quote_result)
-            await telegram_bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="주식 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
-            )
-            return
-
-        quotes, failures = quote_result
-        if not quotes:
-            failed_codes = ", ".join(failure.target.code for failure in failures)
-            await telegram_bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"주식 정보를 불러오지 못했습니다. ({failed_codes})",
-            )
-            return
-
-        if isinstance(exchange_result, Exception):
-            logger.warning("USD/KRW fetch failed: %s", exchange_result)
-            usd_krw = None
-        else:
-            usd_krw = exchange_result
-
-        fetched_at = now
-        context.bot_data[STOCK_CACHE_KEY] = {
-            "quotes": quotes,
-            "failures": failures,
-            "usd_krw": usd_krw,
-            "fetched_at": fetched_at,
-        }
+    quotes = snapshot.quotes
+    failures = snapshot.failures
+    usd_krw = snapshot.usd_krw
+    fetched_at = snapshot.fetched_at
 
     if usd_krw is None:
         exchange_line = "환율 조회 실패 · 해외 종목은 달러로 표시"
@@ -754,10 +550,7 @@ async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = str(update.effective_chat.id)
     today = MyUtils.getToday("yyyy-mm-dd")
 
-    if storage.isExist("user"):
-        user_data = storage.get("user")
-    else:
-        user_data = storage.create("user")
+    user_data = await asyncio.to_thread(storage.get_or_create, "user")
 
     user = user_data.get(user_id) if isinstance(user_data, dict) else None
     name = str(user.get("name") or "").strip() if isinstance(user, dict) else ""
@@ -788,10 +581,7 @@ async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     profile_fingerprint = word_profile_fingerprint(name, birthdate)
 
-    if storage.isExist(WORD_CACHE_NAME):
-        word_cache = storage.get(WORD_CACHE_NAME)
-    else:
-        word_cache = storage.create(WORD_CACHE_NAME)
+    word_cache = await asyncio.to_thread(storage.get_or_create, WORD_CACHE_NAME)
 
     if not isinstance(word_cache, dict):
         word_cache = {}
@@ -831,7 +621,7 @@ async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
     if not gemini_bot.is_error_response(answer):
-        word_cache[user_id] = {
+        word_entry = {
             "date": today,
             "profile_fingerprint": profile_fingerprint,
             "prompt_version": WORD_PROMPT_VERSION,
@@ -841,7 +631,7 @@ async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 answer,
             ),
         }
-        storage.update(WORD_CACHE_NAME, word_cache)
+        await asyncio.to_thread(storage.update_entry, WORD_CACHE_NAME, user_id, word_entry)
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
@@ -853,11 +643,7 @@ async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
 
-    user_json = {}
-    if storage.isExist("user"):
-        user_json = storage.get("user")
-    else:
-        storage.create("user")
+    user_json = await asyncio.to_thread(storage.get_or_create, "user")
     
     user = user_json.get(user_id)
 
@@ -876,10 +662,7 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     question = " ".join(context.args).strip() if context.args else "오늘의 종합 운세"
     profile_fingerprint = fortune_profile_fingerprint(name, birthdate)
 
-    if storage.isExist(FORTUNE_CACHE_NAME):
-        fortune_cache = storage.get(FORTUNE_CACHE_NAME)
-    else:
-        fortune_cache = storage.create(FORTUNE_CACHE_NAME)
+    fortune_cache = await asyncio.to_thread(storage.get_or_create, FORTUNE_CACHE_NAME)
 
     if not isinstance(fortune_cache, dict):
         fortune_cache = {}
@@ -920,8 +703,7 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not gemini_bot.is_error_response(answer):
         user_entry["answers"][question] = answer
         user_entry["recent"] = append_fortune_answer(user_entry["recent"], answer)
-        fortune_cache[user_id] = user_entry
-        storage.update(FORTUNE_CACHE_NAME, fortune_cache)
+        await asyncio.to_thread(storage.update_entry, FORTUNE_CACHE_NAME, user_id, user_entry)
 
     await telegram_bot.send_message(
         chat_id=update.effective_chat.id,
@@ -932,11 +714,7 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = str(update.effective_user.id)
     chat_id = str(update.effective_chat.id)
 
-    user_json = {}
-    if storage.isExist("user"):
-        user_json = storage.get("user")
-    else:
-        storage.create("user")
+    user_json = await asyncio.to_thread(storage.get_or_create, "user")
     
     user = user_json.get(user_id)
 
@@ -979,11 +757,7 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    cache = {}
-    if storage.isExist("chat_cache"):
-        cache = storage.get("chat_cache")
-    else:
-        storage.create("chat_cache")
+    cache = await asyncio.to_thread(storage.get_or_create, "chat_cache")
 
     user_cache = cache.setdefault(user_id, {})
     last_chat_datetime_str = user_cache.get("last_chat_datetime")
@@ -1000,7 +774,7 @@ async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
     
     user_cache["last_chat_datetime"] = now_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    storage.update("chat_cache", cache)
+    await asyncio.to_thread(storage.update_entry, "chat_cache", user_id, user_cache)
 
     await telegram_bot.send_chat_action(update.effective_chat.id)
     answer = await gemini_bot.generate_text_async(question, metadata=metadata)

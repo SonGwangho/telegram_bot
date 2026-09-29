@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import threading
 from collections.abc import Sequence
 from datetime import datetime
@@ -18,6 +17,8 @@ from uuid import uuid4
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
+
+from gemini_history_store import GeminiHistoryStore
 
 from config import (
     gemini_api_key,
@@ -158,7 +159,8 @@ class GeminiBot:
 
         self._client = client
         self._client_lock = threading.Lock()
-        self._records_lock = threading.RLock()
+        self._history_store = GeminiHistoryStore(self.data_file)
+        self.history_db_file = self._history_store.database_file
 
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
@@ -873,13 +875,7 @@ class GeminiBot:
         if not user_id:
             return []
 
-        records = self.load_records()
-        history = [
-            record
-            for record in records
-            if self._matches_chat(record, metadata or {})
-        ]
-        return history[-limit:]
+        return self._history_store.recent(metadata or {}, limit=limit)
 
     @staticmethod
     def format_chat_history(records: list[dict[str, Any]]) -> str:
@@ -894,56 +890,13 @@ class GeminiBot:
         return "\n".join(lines)
 
     def clear_chat_history(self, *, metadata: dict[str, Any]) -> int:
-        if not str(metadata.get("user_id") or ""):
-            return 0
-
-        with self._records_lock:
-            records = self._load_records_unlocked()
-            remaining = [
-                record
-                for record in records
-                if not self._matches_chat(record, metadata)
-            ]
-            deleted_count = len(records) - len(remaining)
-            if deleted_count:
-                self._save_records_unlocked(remaining)
-            return deleted_count
+        return self._history_store.clear_chat(metadata)
 
     def load_records(self) -> list[dict[str, Any]]:
-        with self._records_lock:
-            return self._load_records_unlocked()
-
-    def _load_records_unlocked(self) -> list[dict[str, Any]]:
-        if not self.data_file.exists() or self.data_file.stat().st_size == 0:
-            return []
-
-        try:
-            with self.data_file.open("r", encoding="utf-8") as file:
-                data = json.load(file)
-        except JSONDecodeError:
-            self._backup_corrupt_history()
-            logger.exception("Gemini history JSON is invalid: %s", self.data_file)
-            return []
-        except OSError:
-            logger.exception("Gemini history could not be read: %s", self.data_file)
-            return []
-
-        if not isinstance(data, list):
-            logger.error("Gemini history root is not a list: %s", self.data_file)
-            return []
-        return [record for record in data if isinstance(record, dict)]
+        return self._history_store.load_all()
 
     def save_records(self, records: list[dict[str, Any]]) -> None:
-        with self._records_lock:
-            self._save_records_unlocked(records)
-
-    def _save_records_unlocked(self, records: list[dict[str, Any]]) -> None:
-        self.data_file.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = self.data_file.with_suffix(f"{self.data_file.suffix}.tmp")
-
-        with temp_file.open("w", encoding="utf-8") as file:
-            json.dump(records, file, ensure_ascii=False, indent=2)
-        temp_file.replace(self.data_file)
+        self._history_store.replace(records)
 
     def save_record(
         self,
@@ -962,22 +915,16 @@ class GeminiBot:
             "metadata": metadata or {},
         }
 
-        with self._records_lock:
-            records = self._load_records_unlocked()
-            records.append(record)
-            records = records[-self.max_history_records :]
-            self._save_records_unlocked(records)
+        self._history_store.append(record, max_records=self.max_history_records)
         return record
 
     def backup_data(self) -> Path:
-        with self._records_lock:
-            if not self.data_file.exists():
-                self._save_records_unlocked([])
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            backup_file = self.backup_dir / f"{self.data_file.stem}_{timestamp}.json"
-            shutil.copy2(self.data_file, backup_file)
-            return backup_file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup_file = self.backup_dir / (
+            f"{self.data_file.stem}_{timestamp}_{uuid4().hex[:8]}.json"
+        )
+        self._history_store.export_json(backup_file)
+        return backup_file
 
     def restore_data(self, backup_file: str | Path) -> Path:
         source = Path(backup_file)
@@ -992,9 +939,8 @@ class GeminiBot:
         if not isinstance(restored_data, list):
             raise ValueError(f"Backup root must be a list: {source}")
 
-        with self._records_lock:
-            self._save_records_unlocked(restored_data)
-        return self.data_file
+        self.save_records(restored_data)
+        return self.history_db_file
 
     def list_backups(self) -> list[Path]:
         if not self.backup_dir.exists():
@@ -1101,16 +1047,6 @@ class GeminiBot:
         if chat_id is not None:
             return str(record_metadata.get("chat_id") or "") == str(chat_id)
         return True
-
-    def _backup_corrupt_history(self) -> None:
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            backup_file = self.backup_dir / (
-                f"{self.data_file.stem}_corrupt_{timestamp}.json"
-            )
-            shutil.copy2(self.data_file, backup_file)
-        except OSError:
-            logger.exception("Corrupt Gemini history backup failed")
 
     @staticmethod
     def _log_api_error(model: str, error: genai_errors.APIError) -> None:

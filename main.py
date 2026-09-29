@@ -20,6 +20,7 @@ from commands import (
 )
 from config import start_chat_id, stop_chat_id, telegram_token
 from gemini import gemini_bot
+from update_processor import OrderedUpdateProcessor
 
 
 async def post_init(application: Application) -> None:
@@ -44,6 +45,7 @@ def main() -> None:
     application = (
         Application.builder()
         .token(telegram_token)
+        .concurrent_updates(OrderedUpdateProcessor())
         .post_init(post_init)
         .post_stop(post_stop)
         .post_shutdown(post_shutdown)
@@ -56,7 +58,7 @@ def main() -> None:
     application.add_handler(CommandHandler("reg", register_command))
     application.add_handler(CommandHandler("bb", bb_command))
     application.add_handler(CommandHandler("bbr", bbr_command))
-    # application.add_handler(CommandHandler("ks", korea_stock_command))
+    application.add_handler(CommandHandler("ks", korea_stock_command))
     application.add_handler(CommandHandler("us", us_stock_command))
     application.add_handler(CommandHandler("f", fortune_command))
     application.add_handler(CommandHandler("word", word_command))

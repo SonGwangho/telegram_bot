@@ -18,6 +18,7 @@ KEYWORD_RESPONSES: dict[str, KeywordResponse] = {
     "고둥아": (None, None, "저 켜져 있어요."),
     "일정 달력": (None, None, "https://gwangho.vercel.app/info/fitness"),
     "모임 위치": (None, None, "https://naver.me/FfeOGQ1i"),
+    "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
 }
 
 

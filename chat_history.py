@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import json
-import threading
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from telegram import Update
 
-import storage
+import chat_history_store
 
 
-CHAT_ROOM_HISTORY_NAME = "chat_room_history"
+CHAT_ROOM_HISTORY_NAME = chat_history_store.LEGACY_HISTORY_NAME
 MAX_MESSAGES_PER_CHAT = 2000
 MAX_REPLY_CONTEXT_CHARS = 300
 MAX_FORMATTED_SUMMARY_CHARS = 3_900
 
 _SEOUL_TIMEZONE = timezone(timedelta(hours=9))
-
-_cache_lock = threading.RLock()
 
 
 class ChatHistoryError(RuntimeError):
@@ -85,41 +83,15 @@ def save_chat_message(
     chat_type: str,
     message: dict[str, Any],
 ) -> None:
-    chat_key = str(chat_id)
-
     try:
-        with _cache_lock:
-            cache = _load_cache()
-            raw_chat = cache.get(chat_key)
-            chat = raw_chat if isinstance(raw_chat, dict) else {}
-
-            raw_messages = chat.get("messages")
-            messages = (
-                [item for item in raw_messages if isinstance(item, dict)]
-                if isinstance(raw_messages, list)
-                else []
-            )
-
-            message_id = message.get("message_id")
-            replaced = False
-            if message_id is not None:
-                for index in range(len(messages) - 1, -1, -1):
-                    if messages[index].get("message_id") == message_id:
-                        messages[index] = message
-                        replaced = True
-                        break
-
-            if not replaced:
-                messages.append(message)
-
-            cache[chat_key] = {
-                "chat_id": chat_id,
-                "chat_name": chat_name,
-                "chat_type": chat_type,
-                "messages": messages[-MAX_MESSAGES_PER_CHAT:],
-            }
-            storage.update(CHAT_ROOM_HISTORY_NAME, cache)
-    except (OSError, TypeError, ValueError) as error:
+        chat_history_store.save_message(
+            chat_id=chat_id,
+            chat_name=chat_name,
+            chat_type=chat_type,
+            message=message,
+            max_messages=MAX_MESSAGES_PER_CHAT,
+        )
+    except (OSError, TypeError, ValueError, sqlite3.Error) as error:
         raise ChatHistoryError("채팅 기록을 저장하지 못했습니다.") from error
 
 
@@ -134,21 +106,10 @@ def get_recent_chat_messages(
         )
 
     try:
-        with _cache_lock:
-            cache = _load_cache()
-            chat = cache.get(str(chat_id))
-            if not isinstance(chat, dict):
-                return []
-
-            messages = chat.get("messages")
-            if not isinstance(messages, list):
-                return []
-
-            valid_messages = [
-                item for item in messages if isinstance(item, dict)
-            ]
-            return valid_messages[-limit:]
-    except (OSError, TypeError, ValueError) as error:
+        return chat_history_store.get_recent_messages(
+            chat_id, limit=limit, max_messages=MAX_MESSAGES_PER_CHAT
+        )
+    except (OSError, TypeError, ValueError, sqlite3.Error) as error:
         raise ChatHistoryError("채팅 기록을 불러오지 못했습니다.") from error
 
 
@@ -254,13 +215,3 @@ def _format_message_time(value: Any) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(_SEOUL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
-
-
-def _load_cache() -> dict[str, Any]:
-    if not storage.isExist(CHAT_ROOM_HISTORY_NAME):
-        storage.create(CHAT_ROOM_HISTORY_NAME)
-
-    cache = storage.get(CHAT_ROOM_HISTORY_NAME)
-    if not isinstance(cache, dict):
-        raise ValueError("채팅 기록 JSON의 최상위 값은 객체여야 합니다.")
-    return cache

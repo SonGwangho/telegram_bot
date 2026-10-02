@@ -1,0 +1,28 @@
+name: Deploy Telegram Bot
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Pull latest code
+        shell: powershell
+        run: |
+          cd C:\programs\telegram_bot
+          git fetch origin
+          git reset --hard origin/main
+
+      - name: Install requirements
+        shell: powershell
+        run: |
+          & "C:\programs\telegram_bot\.venv\Scripts\python.exe" -m pip install -r "C:\programs\telegram_bot\requirements.txt"
+
+      - name: Restart Telegram Bot
+        shell: powershell
+        run: |
+          Restart-Service TelegramBot

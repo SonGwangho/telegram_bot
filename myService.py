@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
-from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -16,7 +16,6 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 NAVER_FINANCE_URL = "https://polling.finance.naver.com/api/realtime"
-NAVER_WORLD_STOCK_URL = f"{NAVER_FINANCE_URL}/worldstock"
 NAVER_EXCHANGE_URL = (
     "https://m.search.naver.com/p/csearch/content/qapirender.nhn"
 )
@@ -25,6 +24,17 @@ RETRYABLE_STATUS_CODES = (408, 429, 500, 502, 503, 504)
 
 StockKind = Literal["domestic", "index", "stock", "etf"]
 WORLD_STOCK_KINDS = frozenset({"index", "stock", "etf"})
+_YAHOO_TICKERS = {
+    ".INX": "^GSPC", "GOOG.O": "GOOG", "QQQ.O": "QQQ",
+    "SCHD.K": "SCHD", "JEPQ.O": "JEPQ", "VOO": "VOO",
+}
+# 공급자를 바꿔도 네이버에서 표시하던 이름은 그대로 유지한다.
+_STOCK_NAMES = {
+    ".INX": "S&P 500", "GOOG.O": "알파벳 C",
+    "QQQ.O": "QQQ", "SCHD.K": "SCHD",
+    "JEPQ.O": "JPMorgan Nasdaq Equity Premium Income ETF",
+    "VOO": "Vanguard S&P 500 ETF",
+}
 
 
 class StockQuote(TypedDict):
@@ -148,6 +158,25 @@ def _direction(value: int) -> tuple[str, str]:
     return "", "-"
 
 
+def _positive(value: Any) -> float | None:
+    """체결/종가 후보에서 누락, NaN, 무체결(0)을 제외한다."""
+    try:
+        number = _to_float(value, "가격/거래량")
+    except StockFetchError:
+        return None
+    return number if number > 0 else None
+
+
+def _make_quote(code: str, kind: StockKind, name: str, value: float, previous_close: float) -> StockQuote:
+    rate = (value - previous_close) / previous_close * 100
+    sign, emoji = _direction(1 if value > previous_close else -1 if value < previous_close else 0)
+    return {
+        "code": code, "kind": kind, "isKRW": kind == "domestic",
+        "name": _STOCK_NAMES.get(code, name), "value": value,
+        "rate": abs(rate), "sign": sign, "emoji": emoji,
+    }
+
+
 def fetch_domestic(
     code: str,
     *,
@@ -183,6 +212,40 @@ def fetch_domestic(
         raise StockFetchError(f"국내 종목 {code}의 응답 형식이 변경되었습니다.") from error
 
 
+def _yahoo_history(ticker: Any, **kwargs: Any) -> Any:
+    from yfinance.exceptions import YFPricesMissingError
+
+    for attempt in range(3):
+        try:
+            frame = ticker.history(auto_adjust=False, actions=False, timeout=7, raise_errors=True, **kwargs)
+            if not frame.empty:
+                return frame
+            # 빈 응답도 재시도하되, 장전/휴장 무자료는 호출부에서 기간을 확장한다.
+            if attempt == 2:
+                return frame
+        except Exception as error:
+            if attempt == 2:
+                if isinstance(error, YFPricesMissingError):
+                    # 휴장일에는 Yahoo가 빈 프레임 대신 무자료 예외를 반환하기도 한다.
+                    return None
+                raise StockFetchError(f"yfinance 조회 실패 ({type(error).__name__}).") from None
+        time.sleep(0.4 * 2 ** attempt)
+    raise StockFetchError("yfinance 조회에 실패했습니다.")
+
+
+def _yahoo_closes(frame: Any) -> list[tuple[Any, float]]:
+    if frame is None or frame.empty:
+        return []
+    if "Close" not in frame:
+        raise StockFetchError("yfinance 응답에 Close가 없습니다.")
+    if frame.index.tz is None:
+        raise StockFetchError("yfinance 시세의 거래소 시간대를 확인할 수 없습니다.")
+    series = frame["Close"].copy()
+    # 호스트가 한국 시간이어도 미국 거래일 기준으로 이전 일봉을 고른다(DST 포함).
+    series.index = series.index.tz_convert("America/New_York")
+    return [(stamp, value) for stamp, raw in series.sort_index().items() if (value := _positive(raw)) is not None]
+
+
 def fetch_world(
     code: str,
     kind: str,
@@ -195,32 +258,28 @@ def fetch_world(
     if kind not in WORLD_STOCK_KINDS:
         raise ValueError(f"지원하지 않는 해외 종목 유형입니다: {kind}")
 
-    safe_code = quote(code, safe="")
-    payload = _request_json(
-        f"{NAVER_WORLD_STOCK_URL}/{kind}/{safe_code}",
-        session=session,
-    )
-
     try:
-        data = payload["datas"][0]
-        comparison = data.get("compareToPreviousPrice") or {}
-        status = str(comparison.get("name", "")).upper()
-        direction = 1 if status == "RISING" else -1 if status == "FALLING" else 0
-        sign, emoji = _direction(direction)
-        name_key = "indexName" if kind == "index" else "stockName"
-        return {
-            "code": code,
-            "kind": kind,
-            "isKRW": False,
-            "name": str(data.get(name_key) or code),
-            "value": _to_float(data["closePriceRaw"], "현재가"),
-            "rate": abs(_to_float(data["fluctuationsRatioRaw"], "등락률")),
-            "sign": sign,
-            "emoji": emoji,
-        }
+        import yfinance as yf
+    except ImportError:
+        raise StockFetchError("미국 주식 조회에는 yfinance 설치가 필요합니다.") from None
+    try:
+        # requests.Session은 yfinance의 curl 세션과 호환되지 않는다. 외부 시그니처만 유지한다.
+        ticker = yf.Ticker(_YAHOO_TICKERS.get(code, code))
+        intraday = _yahoo_closes(_yahoo_history(ticker, period="1d", interval="1m", prepost=True))
+        if not intraday:
+            intraday = _yahoo_closes(_yahoo_history(ticker, period="5d", interval="1m", prepost=True))
+        daily = _yahoo_closes(_yahoo_history(ticker, period="1mo", interval="1d", prepost=False))
+        if not intraday:
+            # 분봉 장애를 정규장 가격으로 숨기지 않고 해당 종목 실패로 처리한다.
+            raise StockFetchError(f"해외 종목 {code}의 유효한 분봉 가격이 없습니다.")
+        stamp, value = intraday[-1]
+        previous = [(day, close) for day, close in daily if day.date() < stamp.date()]
+        if not previous:
+            raise StockFetchError(f"해외 종목 {code}의 전일 정규장 종가가 없습니다.")
+        return _make_quote(code, kind, code, value, previous[-1][1])
     except StockFetchError:
         raise
-    except (IndexError, KeyError, TypeError) as error:
+    except Exception as error:
         raise StockFetchError(f"해외 종목 {code}의 응답 형식이 변경되었습니다.") from error
 
 
@@ -290,7 +349,6 @@ def fetch_quotes(
                     "Stock quote fetch failed: code=%s kind=%s error=%s",
                     target.code,
                     target.kind,
-                    target.remark,
                     reason,
                 )
                 failures[index] = StockFailure(target=target, reason=reason)

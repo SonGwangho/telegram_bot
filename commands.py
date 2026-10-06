@@ -28,11 +28,12 @@ from adjustment import (
 from chat_history import (
     ChatHistoryError,
     MAX_MESSAGES_PER_CHAT,
-    build_chat_summary_prompt,
     format_chat_summary,
     get_recent_chat_messages,
     save_update_message,
+    split_chat_summary,
 )
+from chat_summary import ChatSummaryError, summarize_chat_messages
 from config import admin_user_id
 from config import admin_chat_id
 
@@ -87,7 +88,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/f - 오늘의 운세\n'
         '/word - 오늘의 맞춤 추천 문장과 명언\n'
         '/chat ["초기화", "질문"] - AI 대화 및 초기화\n'
-        '/sum 숫자 - 최근 메시지를 고둥이가 요약\n'
+        f'/sum 숫자 - 최근 메시지 1~{MAX_MESSAGES_PER_CHAT:,}개를 고둥이가 요약\n'
         '/uber - 디아블로 우버 진행도\n'
         '/adj - 모임 정산 생성, 결제 등록, 마감\n'
     )
@@ -336,6 +337,9 @@ async def sum_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    chat = update.effective_chat
+    if chat is None:
+        return
     if len(context.args) != 1:
         await telegram_bot.send_message(
             chat_id=update.effective_chat.id,
@@ -380,27 +384,23 @@ async def sum_command(
         )
         return
 
-    await telegram_bot.send_chat_action(update.effective_chat.id)
-    summary = await gemini_bot.generate_text_async(
-        build_chat_summary_prompt(messages),
-        model_type=gemini_bot.lite_model,
-        save=False,
-        metadata={
-            "type": "chat_summary",
-            "chat_id": str(update.effective_chat.id),
-            "message_count": len(messages),
-        },
-        history_limit=0,
-    )
-
     await telegram_bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=format_chat_summary(
-            summary,
-            is_error_response=gemini_bot.is_error_response(summary),
-        ),
+        chat_id=chat.id,
+        text=f"저장된 최근 {len(messages):,}개 메시지를 요약하고 있어요.",
         parse_mode=None,
     )
+    await telegram_bot.send_chat_action(chat.id)
+    try:
+        summary = await summarize_chat_messages(messages, gemini_bot)
+    except ChatSummaryError as error:
+        logger.warning("Chat summary failed: message_count=%s", len(messages))
+        await telegram_bot.send_message(chat_id=chat.id, text=str(error), parse_mode=None)
+        return
+
+    for part in split_chat_summary(format_chat_summary(summary)):
+        sent = await telegram_bot.send_message(chat_id=chat.id, text=part, parse_mode=None)
+        if sent is None:
+            return
 
 
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

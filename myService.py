@@ -6,7 +6,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, TypedDict
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -246,6 +248,42 @@ def _yahoo_closes(frame: Any) -> list[tuple[Any, float]]:
     return [(stamp, value) for stamp, raw in series.sort_index().items() if (value := _positive(raw)) is not None]
 
 
+def _yahoo_overnight(ticker: Any) -> tuple[datetime, float] | None:
+    """분봉에 포함되지 않는 Blue Ocean ATS 체결가를 Yahoo quote API로 조회한다."""
+    for attempt in range(3):
+        try:
+            # yfinance의 익명 인증/세션을 재사용한다. 사용자 API 키는 필요하지 않다.
+            payload = ticker._data.get_raw_json(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={
+                    "symbols": ticker.ticker,
+                    "fields": "overnightMarketPrice,overnightMarketTime",
+                    "overnightPrice": "true",
+                    "formatted": "false",
+                },
+                timeout=7,
+            )
+            quotes = payload["quoteResponse"]["result"]
+            data = next((quote for quote in quotes if quote["symbol"] == ticker.ticker), None)
+            if data is None:
+                raise StockFetchError("Yahoo overnight 응답에 요청한 종목이 없습니다.")
+            if "overnightMarketPrice" not in data and "overnightMarketTime" not in data:
+                return None  # 미지원/무체결 종목은 기존 분봉을 사용한다.
+            value = _positive(data.get("overnightMarketPrice"))
+            timestamp = _positive(data.get("overnightMarketTime"))
+            if value is None or timestamp is None:
+                raise StockFetchError("Yahoo overnight 체결가 또는 시각이 유효하지 않습니다.")
+            stamp = datetime.fromtimestamp(timestamp, ZoneInfo("America/New_York"))
+            if stamp > datetime.now(timezone.utc) + timedelta(minutes=1):
+                raise StockFetchError("Yahoo overnight 체결 시각이 미래입니다.")
+            return stamp, value
+        except Exception as error:
+            if attempt == 2:
+                raise StockFetchError(f"Yahoo overnight 조회 실패 ({type(error).__name__}).") from None
+        time.sleep(0.4 * 2 ** attempt)
+    raise StockFetchError("Yahoo overnight 조회에 실패했습니다.")
+
+
 def fetch_world(
     code: str,
     kind: str,
@@ -269,11 +307,24 @@ def fetch_world(
         if not intraday:
             intraday = _yahoo_closes(_yahoo_history(ticker, period="5d", interval="1m", prepost=True))
         daily = _yahoo_closes(_yahoo_history(ticker, period="1mo", interval="1d", prepost=False))
-        if not intraday:
+        overnight = None
+        if kind != "index":
+            try:
+                overnight = _yahoo_overnight(ticker)
+            except StockFetchError as error:
+                # 보완 API 장애가 기존 정규장/장전/장후 조회까지 중단시키지는 않는다.
+                logger.warning("Yahoo overnight quote unavailable: code=%s error=%s", code, error)
+        latest = intraday[-1] if intraday else None
+        use_overnight = overnight is not None and (latest is None or overnight[0] > latest[0])
+        if use_overnight:
+            latest = overnight
+        if latest is None:
             # 분봉 장애를 정규장 가격으로 숨기지 않고 해당 종목 실패로 처리한다.
             raise StockFetchError(f"해외 종목 {code}의 유효한 분봉 가격이 없습니다.")
-        stamp, value = intraday[-1]
-        previous = [(day, close) for day, close in daily if day.date() < stamp.date()]
+        stamp, value = latest
+        # Overnight 20~24시는 다음 거래일 세션이므로 당일 정규장 종가가 기준이다.
+        trading_day = stamp.date() + timedelta(days=1) if use_overnight and stamp.hour >= 20 else stamp.date()
+        previous = [(day, close) for day, close in daily if day.date() < trading_day]
         if not previous:
             raise StockFetchError(f"해외 종목 {code}의 전일 정규장 종가가 없습니다.")
         return _make_quote(code, kind, code, value, previous[-1][1])

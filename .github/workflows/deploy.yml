@@ -31,7 +31,21 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"
         run: |
           $ErrorActionPreference = 'Stop'
-          Restart-Service TelegramBot
+          try {
+            Restart-Service TelegramBot
+          } catch {
+            $runnerIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $runnerPrincipal = New-Object Security.Principal.WindowsPrincipal($runnerIdentity)
+            Write-Host ('Runner elevated: ' + $runnerPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+            $serviceError = $_.Exception
+            while ($null -ne $serviceError) {
+              if ($serviceError -is [ComponentModel.Win32Exception]) {
+                Write-Host ('Service control Windows error code: ' + $serviceError.NativeErrorCode)
+              }
+              $serviceError = $serviceError.InnerException
+            }
+            throw
+          }
           $telegramService = Get-Service TelegramBot
           $telegramService.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
           Write-Host 'TelegramBot service is running.'

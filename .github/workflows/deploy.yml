@@ -11,18 +11,27 @@ jobs:
 
     steps:
       - name: Pull latest code
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"
         run: |
+          $ErrorActionPreference = 'Stop'
           cd C:\programs\telegram_bot
           git fetch origin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git reset --hard origin/main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install requirements
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"
         run: |
+          $ErrorActionPreference = 'Stop'
           & "C:\programs\telegram_bot\.venv\Scripts\python.exe" -m pip install -r "C:\programs\telegram_bot\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Restart Telegram Bot
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"
         run: |
+          $ErrorActionPreference = 'Stop'
           Restart-Service TelegramBot
+          $telegramService = Get-Service TelegramBot
+          $telegramService.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          Write-Host 'TelegramBot service is running.'

@@ -384,11 +384,6 @@ async def sum_command(
         )
         return
 
-    await telegram_bot.send_message(
-        chat_id=chat.id,
-        text=f"저장된 최근 {len(messages):,}개 메시지를 요약하고 있어요.",
-        parse_mode=None,
-    )
     await telegram_bot.send_chat_action(chat.id)
     try:
         summary = await summarize_chat_messages(messages, gemini_bot)

@@ -49,6 +49,24 @@ function Get-ServiceDaclWithRunnerAccess {
     return $descriptor.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
 }
 
+function Get-RunningRunnerSid {
+    $runnerProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'Runner.Listener.exe'")
+    if ($runnerProcesses.Count -eq 0) {
+        throw 'No running GitHub Actions runner was found. Keep the run.cmd window open and run this script again.'
+    }
+    $runnerSids = @($runnerProcesses | ForEach-Object {
+        $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
+        if ($owner.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace($owner.Sid)) {
+            throw "Could not read the owner of runner process $($_.ProcessId). No permissions were changed."
+        }
+        $owner.Sid
+    } | Sort-Object -Unique)
+    if ($runnerSids.Count -ne 1) {
+        throw 'Runners are running under different accounts. Supply -RunnerServiceName to select a specific runner service, or stop the other runners before trying again.'
+    }
+    return [Security.Principal.SecurityIdentifier]::new($runnerSids[0])
+}
+
 $principal = [Security.Principal.WindowsPrincipal]::new(
     [Security.Principal.WindowsIdentity]::GetCurrent()
 )
@@ -58,22 +76,23 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 if ($RunnerServiceName) {
     $runnerServices = @(Get-CimInstance Win32_Service | Where-Object Name -eq $RunnerServiceName)
-} else {
-    $runnerServices = @(Get-CimInstance Win32_Service | Where-Object Name -like 'actions.runner.*')
-}
-if ($runnerServices.Count -ne 1) {
-    throw 'Expected exactly one GitHub Actions runner service. Supply -RunnerServiceName with its exact Windows service name. If run.cmd runs in a terminal, install the runner as a service first.'
-}
-$runnerService = $runnerServices[0]
-$account = $runnerService.StartName
-switch -Regex ($account) {
-    '^(LocalSystem|NT AUTHORITY\\SYSTEM)$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18'); break }
-    '^(NT AUTHORITY\\)?Network ?Service$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-20'); break }
-    '^(NT AUTHORITY\\)?Local ?Service$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-19'); break }
-    default {
-        if ($account.StartsWith('.\')) { $account = $env:COMPUTERNAME + $account.Substring(1) }
-        $sid = [Security.Principal.NTAccount]::new($account).Translate([Security.Principal.SecurityIdentifier])
+    if ($runnerServices.Count -ne 1) {
+        throw 'The specified GitHub Actions runner service was not found. No permissions were changed.'
     }
+    $account = $runnerServices[0].StartName
+    switch -Regex ($account) {
+        '^(LocalSystem|NT AUTHORITY\\SYSTEM)$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18'); break }
+        '^(NT AUTHORITY\\)?Network ?Service$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-20'); break }
+        '^(NT AUTHORITY\\)?Local ?Service$' { $sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-19'); break }
+        default {
+            if ($account.StartsWith('.\')) { $account = $env:COMPUTERNAME + $account.Substring(1) }
+            $sid = [Security.Principal.NTAccount]::new($account).Translate([Security.Principal.SecurityIdentifier])
+        }
+    }
+} else {
+    # Works for run.cmd in a terminal and for service-hosted runners.
+    $sid = Get-RunningRunnerSid
+    $account = $sid.Translate([Security.Principal.NTAccount]).Value
 }
 
 $botService = Get-Service -Name $BotServiceName
@@ -98,7 +117,7 @@ if ($updatedDacl -ne $originalDacl) {
     Write-Host "Original service permissions saved at: $backupPath"
 }
 
-Write-Host "Runner service: $($runnerService.Name); account: $account"
+Write-Host "Runner account: $account; SID: $($sid.Value)"
 Write-Host "The runner now has query/start/stop access to $BotServiceName."
 Restart-Service -Name $BotServiceName
 $botService.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))

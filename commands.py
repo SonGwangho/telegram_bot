@@ -86,7 +86,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/bbr ["", yyyy-mm-dd] - 삼성 야구 결과\n'
         '/ks - 증시 정보\n'
         '/us - 미국 증시 정보\n'
-        '/f - 오늘의 운세\n'
+        '/f [re] [질문] - 오늘의 운세 (re: 캐시 없이 재조회)\n'
         '/word - 오늘의 맞춤 추천 문장과 명언\n'
         '/chat ["초기화", "질문"] - AI 대화 및 초기화\n'
         f'/sum 숫자 - 최근 메시지 1~{MAX_MESSAGES_PER_CHAT:,}개를 고둥이가 요약\n'
@@ -657,7 +657,11 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     birthdate = user["birthdate"]
 
     today_str = seoul_today().isoformat()
-    question = " ".join(context.args).strip() if context.args else "오늘의 종합 운세"
+    args = list(context.args or [])
+    force_refresh = bool(args and args[0].casefold() == "re")
+    if force_refresh:
+        args = args[1:]
+    question = " ".join(args).strip() or "오늘의 종합 운세"
     profile_fingerprint = fortune_profile_fingerprint(name, birthdate)
 
     fortune_cache = await asyncio.to_thread(storage.get_or_create, FORTUNE_CACHE_NAME)
@@ -672,7 +676,7 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     cached_answer = user_entry["answers"].get(question)
 
-    if cached_answer:
+    if cached_answer and not force_refresh:
         await telegram_bot.send_message(
             chat_id=update.effective_chat.id,
             text=cached_answer,

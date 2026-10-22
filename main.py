@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from commands import (
@@ -12,6 +15,7 @@ from commands import (
     korea_stock_command,
     remember_message,
     register_command,
+    restart_command,
     start_command,
     sum_command,
     uber_command,
@@ -20,10 +24,15 @@ from commands import (
 )
 from config import start_chat_id, stop_chat_id, telegram_token
 from gemini import gemini_bot
+from service_restart import ServiceRestartError, ensure_restart_task
 from update_processor import OrderedUpdateProcessor
 
 
 async def post_init(application: Application) -> None:
+    try:
+        await asyncio.to_thread(ensure_restart_task)
+    except ServiceRestartError:
+        logging.getLogger(__name__).exception("Automatic service restart setup failed.")
     await application.bot.send_message(
         chat_id=start_chat_id,
         text="고둥이가 깨어났어요! 오늘도 잘 부탁해요.",
@@ -54,6 +63,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("restart", restart_command))
     application.add_handler(CommandHandler("dday", dday_command))
     application.add_handler(CommandHandler("reg", register_command))
     application.add_handler(CommandHandler("bb", bb_command))

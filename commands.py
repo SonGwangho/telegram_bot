@@ -1,7 +1,8 @@
 import asyncio
 import html
 import logging
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 from telegram import Update
@@ -46,6 +47,7 @@ import myService
 import stock_service
 import storage
 import uber_service
+from service_restart import ServiceRestartError, request_service_restart
 from fortune import (
     FORTUNE_CACHE_NAME,
     append_fortune_answer,
@@ -67,6 +69,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CHAT_QUESTION_LENGTH = 2_000
 CHAT_RESET_WORDS = {"reset", "초기화", "대화초기화"}
+_RESTART_COMMANDS_AFTER = datetime.now(timezone.utc)
+_RESTART_COOLDOWN_SECONDS = 120
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -74,6 +78,51 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         chat_id=update.effective_chat.id,
         text="안녕하세요. 텔레그램 봇이 시작되었습니다.",
     )
+
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if message is None or chat is None:
+        return
+
+    if not admin_user_id or user is None or str(user.id) != admin_user_id.strip():
+        await telegram_bot.send_message(chat_id=chat.id, text="관리자만 사용할 수 있어요.")
+        return
+    if context.args:
+        await telegram_bot.send_message(chat_id=chat.id, text="사용법: /restart")
+        return
+    # 처리 중 중지된 업데이트가 재전달되어 재시작을 반복하지 않도록 한다.
+    if message.date <= _RESTART_COMMANDS_AFTER or update.edited_message is not None:
+        await telegram_bot.send_message(
+            chat_id=chat.id, text="이전 재시작 명령은 실행하지 않아요. /restart를 새로 보내 주세요."
+        )
+        return
+
+    now = time.monotonic()
+    if context.application.bot_data.get("restart_pending_until", 0.0) > now:
+        await telegram_bot.send_message(
+            chat_id=chat.id, text="이미 재시작을 요청했어요. 잠시 후 다시 시도해 주세요."
+        )
+        return
+
+    context.application.bot_data["restart_pending_until"] = now + _RESTART_COOLDOWN_SECONDS
+    try:
+        notification = await telegram_bot.send_message(
+            chat_id=chat.id, text="서비스 재시작을 요청합니다. 잠시 기다려 주세요."
+        )
+        # 공통 전송 래퍼는 전송 실패 시 None을 반환한다.
+        if notification is None:
+            context.application.bot_data.pop("restart_pending_until", None)
+            return
+        await asyncio.to_thread(request_service_restart)
+    except ServiceRestartError as error:
+        context.application.bot_data.pop("restart_pending_until", None)
+        await telegram_bot.send_message(chat_id=chat.id, text=str(error), parse_mode=None)
+    except BaseException:
+        context.application.bot_data.pop("restart_pending_until", None)
+        raise
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -92,6 +141,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f'/sum 숫자 - 최근 메시지 1~{MAX_MESSAGES_PER_CHAT:,}개를 고둥이가 요약\n'
         '/uber - 디아블로 우버 진행도\n'
         '/adj - 모임 정산 생성, 결제 등록, 마감\n'
+        '/restart - 봇 서비스 재시작 (관리자 전용)\n'
     )
 
     print(f"help_command called by user_id={update.effective_user.id}")

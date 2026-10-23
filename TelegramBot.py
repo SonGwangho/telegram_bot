@@ -24,9 +24,11 @@ class TelegramBot:
         max_retries: int = 2,
         retry_delay: float = 1.0,
         error_message: str = "오류가 발생했어요.",
+        *,
+        bot: Bot | None = None,
     ) -> None:
         self.token = token or telegram_token
-        self.bot = Bot(token=self.token)
+        self.bot = bot if bot is not None else Bot(token=self.token)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.error_message = error_message
@@ -64,6 +66,10 @@ class TelegramBot:
         text: str,
         parse_mode: str | None = ParseMode.HTML,
         reply_markup: Any | None = None,
+        *,
+        message_thread_id: int | None = None,
+        allow_sending_without_reply: bool = False,
+        notify_on_error: bool = True,
     ) -> Any:
         return await self._request_with_retry(
             lambda: self.bot.send_message(
@@ -72,9 +78,15 @@ class TelegramBot:
                 parse_mode=parse_mode,
                 reply_to_message_id=message_id,
                 reply_markup=reply_markup,
+                message_thread_id=message_thread_id,
+                allow_sending_without_reply=allow_sending_without_reply,
+                connect_timeout=5,
+                read_timeout=10,
+                write_timeout=10,
+                pool_timeout=5,
             ),
             chat_id=chat_id,
-            notify_on_error=True,
+            notify_on_error=notify_on_error,
         )
 
     async def send_photo(

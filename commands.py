@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -44,6 +45,7 @@ from gemini import gemini_bot
 import baseball_service
 import hijack
 import myService
+import reminder
 import stock_service
 import storage
 import uber_service
@@ -141,6 +143,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f'/sum 숫자 - 최근 메시지 1~{MAX_MESSAGES_PER_CHAT:,}개를 고둥이가 요약\n'
         '/uber - 디아블로 우버 진행도\n'
         '/adj - 모임 정산 생성, 결제 등록, 마감\n'
+        '/r - 리마인더 등록 및 사용법\n'
         '/restart - 봇 서비스 재시작 (관리자 전용)\n'
     )
 
@@ -151,6 +154,47 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         chat_id=update.effective_chat.id,
         text=help_text,
     )
+
+
+async def r_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is None:
+        return
+    if not context.args:
+        await message.reply_text(reminder.get_usage(), parse_mode=None)
+        return
+    if update.edited_message is not None or update.edited_channel_post is not None:
+        await message.reply_text("리마인더는 /r 명령을 새 메시지로 보내 등록해 주세요.")
+        return
+
+    try:
+        due_at, text = reminder.parse_reminder(context.args)
+    except reminder.ReminderError as error:
+        await message.reply_text(f"{error}\n\n{reminder.get_usage()}", parse_mode=None)
+        return
+
+    service = context.application.bot_data.get(reminder.SERVICE_KEY)
+    if service is None:
+        await message.reply_text("리마인더를 사용할 수 없어요. 잠시 후 다시 시도해 주세요.")
+        return
+    try:
+        saved = await service.register(
+            chat_id=message.chat_id,
+            message_id=message.message_id,
+            message_thread_id=message.message_thread_id if message.is_topic_message else None,
+            due_at=due_at,
+            text=text,
+        )
+    except (OSError, sqlite3.Error, RuntimeError):
+        logger.exception("Failed to save reminder.")
+        await message.reply_text("알림을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.")
+        return
+
+    if saved["sent_at"] is not None:
+        confirmation = "이미 전송이 완료된 알림이에요."
+    else:
+        confirmation = f"⏰ {reminder.format_due_at(saved['due_at'])} (한국 시간)에 알려드릴게요."
+    await message.reply_text(confirmation, parse_mode=None)
 
 
 ADJ_USAGE = (

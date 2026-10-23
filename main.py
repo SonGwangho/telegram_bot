@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
@@ -13,6 +14,7 @@ from commands import (
     help_command,
     hijack_command,
     korea_stock_command,
+    r_command,
     remember_message,
     register_command,
     restart_command,
@@ -24,11 +26,19 @@ from commands import (
 )
 from config import start_chat_id, stop_chat_id, telegram_token
 from gemini import gemini_bot
+from reminder import ReminderService, SERVICE_KEY
 from service_restart import ServiceRestartError, ensure_restart_task
 from update_processor import OrderedUpdateProcessor
 
 
 async def post_init(application: Application) -> None:
+    reminder_service = ReminderService(application.bot)
+    try:
+        await reminder_service.start()
+    except (OSError, sqlite3.Error):
+        logging.getLogger(__name__).exception("Failed to start reminder service.")
+    else:
+        application.bot_data[SERVICE_KEY] = reminder_service
     try:
         await asyncio.to_thread(ensure_restart_task)
     except ServiceRestartError:
@@ -40,6 +50,9 @@ async def post_init(application: Application) -> None:
 
 
 async def post_stop(application: Application) -> None:
+    reminder_service = application.bot_data.get(SERVICE_KEY)
+    if reminder_service is not None:
+        await reminder_service.stop()
     await application.bot.send_message(
         chat_id=stop_chat_id,
         text="고둥이는 이만 쉬러 갈게요. 다음에 또 만나요.",
@@ -47,6 +60,9 @@ async def post_stop(application: Application) -> None:
 
 
 async def post_shutdown(_application: Application) -> None:
+    reminder_service = _application.bot_data.get(SERVICE_KEY)
+    if reminder_service is not None:
+        await reminder_service.stop()
     await gemini_bot.close()
 
 
@@ -63,6 +79,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("r", r_command))
     application.add_handler(CommandHandler("restart", restart_command))
     application.add_handler(CommandHandler("dday", dday_command))
     application.add_handler(CommandHandler("reg", register_command))

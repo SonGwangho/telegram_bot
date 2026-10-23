@@ -24,15 +24,25 @@ USAGE = (
     "⏰ 리마인더 사용법\n\n"
     "/r 30분 빨래 꺼내기\n"
     "/r 2시간 약 먹기\n"
-    "/r {example_date} 09:00 회의\n\n"
+    "/r 1시간 50분 노트북 챙기기\n"
+    "/r {example_date} 09:00 회의\n"
+    "/r {example_short_date} 09:00 회의\n"
+    "/r {example_month}월 {example_day}일 09:00 회의\n"
+    "/r {example_month}월 {example_day}일 9시 30분 회의\n\n"
     "분·시간은 1 이상의 정수로 입력해 주세요.\n"
-    "날짜 지정은 YYYY-MM-DD HH:MM 형식이며 한국 시간 기준입니다.\n"
+    "날짜는 YYYY-MM-DD, MM-DD, MM월 DD일 형식으로 입력해 주세요.\n"
+    "날짜 뒤에는 HH:MM 또는 H시 M분 형식의 시각을 붙여 주세요.\n"
+    "연도를 생략하면 올해로 해석하며, 지난 날짜·시각은 등록하지 않습니다.\n"
+    "모든 시간은 한국 시간 기준입니다.\n"
     "알림 시간이 되면 등록한 메시지에 답장해드립니다.\n"
     "봇이 꺼져 있는 동안 시간이 지난 알림은 재기동 후 보내드립니다."
 )
 _RELATIVE_TIME = re.compile(r"([0-9]+)(분|시간)")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SHORT_DATE = re.compile(r"([0-9]{1,2})-([0-9]{1,2})")
+_KOREAN_DATE = re.compile(r"([0-9]{1,2})월\s*([0-9]{1,2})일")
 _TIME = re.compile(r"[0-9]{2}:[0-9]{2}")
+_KOREAN_TIME = re.compile(r"([0-9]{1,2})시\s*([0-9]{1,2})분")
 _STORAGE_ERRORS = (OSError, sqlite3.Error)
 
 
@@ -42,7 +52,12 @@ class ReminderError(ValueError):
 
 def get_usage() -> str:
     tomorrow = datetime.now(SEOUL_TIMEZONE).date() + timedelta(days=1)
-    return USAGE.format(example_date=tomorrow.isoformat())
+    return USAGE.format(
+        example_date=tomorrow.isoformat(),
+        example_short_date=tomorrow.strftime("%m-%d"),
+        example_month=tomorrow.month,
+        example_day=tomorrow.day,
+    )
 
 
 def parse_reminder(
@@ -54,27 +69,60 @@ def parse_reminder(
 
     relative = _RELATIVE_TIME.fullmatch(args[0])
     if relative:
+        seconds = 0
+        content_start = 0
         try:
-            amount = int(relative[1])
-            seconds = amount * (60 if relative[2] == "분" else 3600)
+            for token in args:
+                relative = _RELATIVE_TIME.fullmatch(token)
+                if relative is None:
+                    break
+                amount = int(relative[1])
+                if amount <= 0:
+                    raise ReminderError("분·시간은 1 이상의 정수로 입력해 주세요.")
+                seconds += amount * (60 if relative[2] == "분" else 3600)
+                content_start += 1
             due_at = now + timedelta(seconds=seconds)
+        except ReminderError:
+            raise
         except (OverflowError, ValueError) as error:
             raise ReminderError("분·시간은 계산 가능한 범위의 양의 정수로 입력해 주세요.") from error
-        if amount <= 0:
-            raise ReminderError("분·시간은 1 이상의 정수로 입력해 주세요.")
-        content_start = 1
-    elif len(args) >= 2 and _DATE.fullmatch(args[0]) and _TIME.fullmatch(args[1]):
+    else:
+        date_text = args[0]
+        time_index = 1
+        if not _DATE.fullmatch(date_text):
+            short_date = _SHORT_DATE.fullmatch(date_text)
+            if short_date:
+                month, day = short_date.groups()
+            else:
+                korean_date = _KOREAN_DATE.fullmatch(date_text)
+                if korean_date is None:
+                    korean_date = _KOREAN_DATE.fullmatch(" ".join(args[:2]))
+                    time_index = 2
+                if korean_date is None:
+                    raise ReminderError("시간은 분·시간 또는 날짜와 시각 형식으로 입력해 주세요.")
+                month, day = korean_date.groups()
+            date_text = f"{now.year}-{month}-{day}"
+        if len(args) <= time_index:
+            raise ReminderError("날짜 뒤에 HH:MM 또는 H시 M분 형식의 시각을 입력해 주세요.")
+        time_text = args[time_index]
+        content_start = time_index + 1
+        if not _TIME.fullmatch(time_text):
+            korean_time = _KOREAN_TIME.fullmatch(time_text)
+            if korean_time is None:
+                korean_time = _KOREAN_TIME.fullmatch(" ".join(args[time_index:time_index + 2]))
+                content_start = time_index + 2
+            if korean_time is None:
+                raise ReminderError("날짜 뒤에 HH:MM 또는 H시 M분 형식의 시각을 입력해 주세요.")
+            hour, minute = korean_time.groups()
+            time_text = f"{int(hour):02d}:{int(minute):02d}"
         try:
             due_at = datetime.strptime(
-                f"{args[0]} {args[1]}", "%Y-%m-%d %H:%M"
+                f"{date_text} {time_text}", "%Y-%m-%d %H:%M"
             ).replace(tzinfo=SEOUL_TIMEZONE)
         except ValueError as error:
             raise ReminderError("존재하는 날짜와 시각을 입력해 주세요.") from error
         if due_at <= now:
             raise ReminderError("현재보다 미래의 날짜와 시각을 입력해 주세요.")
-        content_start = 2
-    else:
-        raise ReminderError("시간은 30분, 2시간 또는 YYYY-MM-DD HH:MM 형식으로 입력해 주세요.")
 
     text = " ".join(args[content_start:]).strip()
     if not text:

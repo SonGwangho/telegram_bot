@@ -16,7 +16,7 @@ KEYWORD_RESPONSES: dict[str, KeywordResponse] = {
     # "키워드": (None, None, "멘션 없는 응답 문구"),
     "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
     "고둥아": (None, None, "저 켜져 있어요."),
-    "일정 달력": (None, None, "https://gwangho.vercel.app/info/fitness"),
+    "일정달력": (None, None, "https://gwangho.vercel.app/info/fitness?device=pc"),
     "집합": (None, None, "집합"),
     "라운지": (None, None, "손 - https://gwangho.vercel.app/lounge\n송 - https://ssong.tail84ed05.ts.net/"),
     "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
@@ -37,9 +37,9 @@ async def handle_url_shortening(message: Message, text: str) -> None:
 def find_keyword_response(
     text: str,
 ) -> KeywordResponse | None:
-    normalized_text = text.casefold()
+    normalized_text = text.replace(" ", "").casefold()
     for keyword, response in KEYWORD_RESPONSES.items():
-        if normalized_text.startswith(keyword.casefold()):
+        if normalized_text == keyword.replace(" ", "").casefold():
             return response
 
     return None
@@ -102,7 +102,7 @@ async def handle_mention_response(
 
 async def hijack_message(message: Message) -> None:
     text = message.text or message.caption or ""
-    normalized_text = text.casefold()
+    normalized_text = text.replace(" ", "").casefold()
     keyword_response = find_keyword_response(text)
 
     if normalized_text == "집합":
@@ -116,7 +116,7 @@ async def hijack_message(message: Message) -> None:
             (5213822462, "홍윤기", "집합")
         ]
         await handle_mention_response(message, items)
-    elif normalized_text.startswith(("http://", "https://")) and len(text) > 100:
+    elif text.casefold().startswith(("http://", "https://")) and len(text) > 100:
         await handle_url_shortening(message, text)
     elif keyword_response is not None:
         await handle_keyword_response(message, keyword_response)

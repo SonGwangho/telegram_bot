@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 import requests
@@ -17,19 +18,7 @@ telegram_bot = TelegramBot()
 logger = logging.getLogger(__name__)
 
 KeywordResponse = tuple[int | None, str | None, str]
-
-KEYWORD_RESPONSES: dict[str, KeywordResponse] = {
-    # "키워드": (사용자 ID, "표시 이름", "응답 문구"),
-    # "키워드": (None, None, "멘션 없는 응답 문구"),
-    "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
-    "고둥아": (None, None, "저 켜져 있어요."),
-    "일정달력": (None, None, "https://gwangho.vercel.app/info/fitness?device=pc"),
-    "집합": (None, None, "집합"),
-    "메타버스": (None, None, "https://company.gwangho.party"),
-    "회사": (None, None, "https://company.gwangho.party"),
-    "게임": (None, None, "https://game.gwangho.party"),
-    "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
-}
+KeywordHandler = Callable[[Message], Awaitable[None]]
 
 
 def parse_attendance_time(value: object) -> datetime | None:
@@ -135,7 +124,7 @@ async def handle_url_shortening(message: Message, text: str) -> None:
 
 def find_keyword_response(
     text: str,
-) -> KeywordResponse | None:
+) -> KeywordResponse | KeywordHandler | None:
     normalized_text = text.replace(" ", "").casefold()
     for keyword, response in KEYWORD_RESPONSES.items():
         if normalized_text == keyword.replace(" ", "").casefold():
@@ -182,12 +171,18 @@ async def handle_keyword_response(
         parse_mode="HTML",
     )
 
-async def handle_mention_response(
-    message: Message,
-    response: list[KeywordResponse],
-) -> None:
+async def handle_mention_response(message: Message) -> None:
+    items: list[KeywordResponse] = [
+        (1929425093, "손광호", "집합"),
+        (1971370370, "김다희", "집합"),
+        (5178590142, "김소영", "집합"),
+        (955502560, "차명구", "집합"),
+        (5129445435, "송상미", "집합"),
+        (1000684581, "고소은", "집합"),
+        (5213822462, "홍윤기", "집합")
+    ]
     mention = ""
-    for (user_id, display_name, response_text) in response:
+    for (user_id, display_name, response_text) in items:
         mention += (
             f'<a href="tg://user?id={user_id}">{html.escape(display_name)}</a>'
         )
@@ -201,39 +196,37 @@ async def handle_mention_response(
 
 
 async def handle_keyword_list(message: Message) -> None:
-    keywords = dict.fromkeys((*KEYWORD_HANDLERS, *KEYWORD_RESPONSES))
     await telegram_bot.send_message(
         chat_id=message.chat_id,
-        text="\n".join(keywords),
+        text="\n".join(KEYWORD_RESPONSES),
         parse_mode=None,
     )
 
 
-KEYWORD_HANDLERS = {
+KEYWORD_RESPONSES: dict[str, KeywordResponse | KeywordHandler] = {
+    # "키워드": (사용자 ID, "표시 이름", "응답 문구"),
+    # "키워드": (None, None, "멘션 없는 응답 문구"),
     "!명령어": handle_keyword_list,
     "!퇴근": handle_attendance,
+    "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
+    "고둥아": (None, None, "저 켜져 있어요."),
+    "일정달력": (None, None, "https://gwangho.vercel.app/info/fitness?device=pc"),
+    "집합": handle_mention_response,
+    "메타버스": (None, None, "https://company.gwangho.party"),
+    "회사": (None, None, "https://company.gwangho.party"),
+    "게임": (None, None, "https://game.gwangho.party"),
+    "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
 }
 
 
 async def hijack_message(message: Message) -> None:
     text = message.text or message.caption or ""
-    normalized_text = text.replace(" ", "").casefold()
-    keyword_handler = KEYWORD_HANDLERS.get(normalized_text)
-
-    if keyword_handler is not None:
-        await keyword_handler(message)
-    elif normalized_text == "집합":
-        items: list[KeywordResponse] = [
-            (1929425093, "손광호", "집합"),
-            (1971370370, "김다희", "집합"),
-            (5178590142, "김소영", "집합"),
-            (955502560, "차명구", "집합"),
-            (5129445435, "송상미", "집합"),
-            (1000684581, "고소은", "집합"),
-            (5213822462, "홍윤기", "집합")
-        ]
-        await handle_mention_response(message, items)
-    elif text.casefold().startswith(("http://", "https://")) and len(text) > 100:
+    if text.casefold().startswith(("http://", "https://")) and len(text) > 100:
         await handle_url_shortening(message, text)
-    elif (keyword_response := find_keyword_response(text)) is not None:
+        return
+
+    keyword_response = find_keyword_response(text)
+    if callable(keyword_response):
+        await keyword_response(message)
+    elif keyword_response is not None:
         await handle_keyword_response(message, keyword_response)

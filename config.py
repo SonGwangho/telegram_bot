@@ -9,6 +9,9 @@ start_chat_id = os.getenv("start_chat_id")
 stop_chat_id = os.getenv("stop_chat_id")
 
 telegram_token = os.getenv("telegram_token")
+attendance_api_url = os.getenv(
+    "attendance_api_url", "http://127.0.0.1:18081/api/attendance"
+)
 gemini_api_key = os.getenv("gemini_api_key")
 gemini_model = os.getenv("gemini_model")
 gemini_model_lite = os.getenv("gemini_model_lite")

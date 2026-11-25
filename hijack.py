@@ -1,13 +1,19 @@
 import asyncio
 import html
+import logging
+from datetime import datetime
 
+import requests
 from telegram import Message
 
+from appointment import SEOUL_TIMEZONE
+from config import attendance_api_url
 from MyUtils import MyUtils
 from TelegramBot import TelegramBot
 
 
 telegram_bot = TelegramBot()
+logger = logging.getLogger(__name__)
 
 KeywordResponse = tuple[int | None, str | None, str]
 
@@ -23,6 +29,83 @@ KEYWORD_RESPONSES: dict[str, KeywordResponse] = {
     "게임": (None, None, "https://game.gwangho.party"),
     "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
 }
+
+
+def parse_attendance_time(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("근태 시각이 문자열이 아닙니다.")
+
+    timestamp = datetime.fromisoformat(value)
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=SEOUL_TIMEZONE)
+    return timestamp.astimezone(SEOUL_TIMEZONE)
+
+
+def fetch_attendance_message(user_id: int) -> str:
+    response = requests.get(
+        attendance_api_url,
+        params={"telegramUserId": user_id},
+        timeout=5,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(
+        members := payload.get("members"), list
+    ):
+        raise ValueError("근태 API 응답에 members 목록이 없습니다.")
+    if not members:
+        return "등록된 근태 정보가 없습니다."
+    if len(members) != 1 or not isinstance(members[0], dict):
+        raise ValueError("근태 API가 사용자 한 명의 정보를 반환하지 않았습니다.")
+
+    member = members[0]
+    name = member.get("googleName")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("근태 API 응답에 이름이 없습니다.")
+
+    check_in = parse_attendance_time(member.get("checkedInAt"))
+    check_out = parse_attendance_time(member.get("scheduledCheckOutAt"))
+    check_in_text = f"{check_in:%H}시 {check_in:%M}분" if check_in else "-"
+    check_out_text = f"{check_out:%H}시 {check_out:%M}분" if check_out else "-"
+
+    remaining_text = "-"
+    if check_out is not None:
+        remaining = check_out - datetime.now(SEOUL_TIMEZONE)
+        remaining_seconds = max(0, int(remaining.total_seconds()))
+        hours, remainder = divmod(remaining_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        remaining_text = f"{minutes:02d}분 {seconds:02d}초"
+        if hours:
+            remaining_text = f"{hours:02d}시 {remaining_text}"
+
+    status_label = member.get("statusLabel")
+    action_label = member.get("actionLabel")
+    current_status = status_label or action_label or "-"
+    if status_label and action_label and status_label != action_label:
+        current_status = f"{status_label} ({action_label})"
+
+    return (
+        f"{name.strip()}님의 근태 정보\n"
+        f"출근: {check_in_text}\n"
+        f"퇴근: {check_out_text}\n"
+        f"남은 시간: {remaining_text}\n"
+        f"현재 상태: {current_status}"
+    )
+
+
+async def handle_attendance(message: Message) -> None:
+    if message.from_user is None or message.sender_chat is not None:
+        return
+
+    try:
+        text = await asyncio.to_thread(fetch_attendance_message, message.from_user.id)
+    except (requests.RequestException, ValueError) as error:
+        logger.warning("근태 API 조회 실패 (%s)", type(error).__name__)
+        text = "근태 정보를 조회하지 못했습니다."
+
+    await telegram_bot.send_message(chat_id=message.chat_id, text=text, parse_mode=None)
 
 
 async def handle_url_shortening(message: Message, text: str) -> None:
@@ -107,7 +190,9 @@ async def hijack_message(message: Message) -> None:
     normalized_text = text.replace(" ", "").casefold()
     keyword_response = find_keyword_response(text)
 
-    if normalized_text == "집합":
+    if normalized_text == "!퇴근":
+        await handle_attendance(message)
+    elif normalized_text == "집합":
         items: list[KeywordResponse] = [
             (1929425093, "손광호", "집합"),
             (1971370370, "김다희", "집합"),

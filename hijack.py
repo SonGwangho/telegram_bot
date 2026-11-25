@@ -21,20 +21,6 @@ KeywordResponse = tuple[int | None, str | None, str]
 KeywordHandler = Callable[[Message], Awaitable[None]]
 
 
-KEYWORD_RESPONSES: dict[str, KeywordResponse | KeywordHandler] = {
-    # "키워드": (사용자 ID, "표시 이름", "응답 문구"),
-    # "키워드": (None, None, "멘션 없는 응답 문구"),
-    "!명령어": handle_keyword_list,
-    "!근태": handle_attendance,
-    "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
-    "고둥아": (None, None, "저 켜져 있어요."),
-    "일정달력": (None, None, "https://gwangho.vercel.app/info/fitness?device=pc"),
-    "집합": handle_mention_response,
-    "메타버스": (None, None, "https://company.gwangho.party"),
-    "회사": (None, None, "https://company.gwangho.party"),
-    "게임": (None, None, "https://game.gwangho.party"),
-}
-
 def parse_attendance_time(value: object) -> datetime | None:
     if value is None:
         return None
@@ -216,6 +202,21 @@ async def handle_keyword_list(message: Message) -> None:
         parse_mode=None,
     )
 
+
+KEYWORD_RESPONSES: dict[str, KeywordResponse | KeywordHandler] = {
+    # "키워드": (사용자 ID, "표시 이름", "응답 문구"),
+    # "키워드": (None, None, "멘션 없는 응답 문구"),
+    "!명령어": handle_keyword_list,
+    "!근태": handle_attendance,
+    "생존신고": (5213822462, "홍 윤기", "생존신고 바람"),
+    "고둥아": (None, None, "저 켜져 있어요."),
+    "일정달력": (None, None, "https://gwangho.vercel.app/info/fitness?device=pc"),
+    "집합": handle_mention_response,
+    "메타버스": (None, None, "https://company.gwangho.party"),
+    "회사": (None, None, "https://company.gwangho.party"),
+    "게임": (None, None, "https://game.gwangho.party"),
+    "내식단": (None, None, "아침 - 그릭요거트, 계란 2개\n점심 - 프로틴\n간식 - 두유, 아몬드\n저녁 - 고구마, 닭가슴살, 샐러드"),
+}
 
 
 async def hijack_message(message: Message) -> None:

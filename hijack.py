@@ -6,6 +6,7 @@ from datetime import datetime
 import requests
 from telegram import Message
 
+import storage
 from appointment import SEOUL_TIMEZONE
 from config import attendance_api_url
 from MyUtils import MyUtils
@@ -43,6 +44,20 @@ def parse_attendance_time(value: object) -> datetime | None:
     return timestamp.astimezone(SEOUL_TIMEZONE)
 
 
+def find_registered_name(user_id: int) -> str:
+    try:
+        users = storage.get("user")
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError) as error:
+        logger.warning("근태 사용자 이름 조회 실패 (%s)", type(error).__name__)
+        return ""
+
+    user = users.get(str(user_id)) if isinstance(users, dict) else None
+    name = user.get("name") if isinstance(user, dict) else None
+    return name.strip() if isinstance(name, str) else ""
+
+
 def fetch_attendance_message(user_id: int) -> str:
     response = requests.get(
         attendance_api_url,
@@ -61,9 +76,8 @@ def fetch_attendance_message(user_id: int) -> str:
         raise ValueError("근태 API가 사용자 한 명의 정보를 반환하지 않았습니다.")
 
     member = members[0]
-    name = member.get("googleName")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("근태 API 응답에 이름이 없습니다.")
+    name = find_registered_name(user_id)
+    title = f"{name}님의 근태 정보" if name else "근태 정보"
 
     check_in = parse_attendance_time(member.get("checkedInAt"))
     check_out = parse_attendance_time(member.get("scheduledCheckOutAt"))
@@ -87,7 +101,7 @@ def fetch_attendance_message(user_id: int) -> str:
         current_status = f"{status_label} ({action_label})"
 
     return (
-        f"{name.strip()}님의 근태 정보\n"
+        f"{title}\n"
         f"출근: {check_in_text}\n"
         f"퇴근: {check_out_text}\n"
         f"남은 시간: {remaining_text}\n"
@@ -185,13 +199,29 @@ async def handle_mention_response(
         parse_mode="HTML",
     )
 
+
+async def handle_keyword_list(message: Message) -> None:
+    keywords = dict.fromkeys((*KEYWORD_HANDLERS, *KEYWORD_RESPONSES))
+    await telegram_bot.send_message(
+        chat_id=message.chat_id,
+        text="\n".join(keywords),
+        parse_mode=None,
+    )
+
+
+KEYWORD_HANDLERS = {
+    "!명령어": handle_keyword_list,
+    "!퇴근": handle_attendance,
+}
+
+
 async def hijack_message(message: Message) -> None:
     text = message.text or message.caption or ""
     normalized_text = text.replace(" ", "").casefold()
-    keyword_response = find_keyword_response(text)
+    keyword_handler = KEYWORD_HANDLERS.get(normalized_text)
 
-    if normalized_text == "!퇴근":
-        await handle_attendance(message)
+    if keyword_handler is not None:
+        await keyword_handler(message)
     elif normalized_text == "집합":
         items: list[KeywordResponse] = [
             (1929425093, "손광호", "집합"),
@@ -205,5 +235,5 @@ async def hijack_message(message: Message) -> None:
         await handle_mention_response(message, items)
     elif text.casefold().startswith(("http://", "https://")) and len(text) > 100:
         await handle_url_shortening(message, text)
-    elif keyword_response is not None:
+    elif (keyword_response := find_keyword_response(text)) is not None:
         await handle_keyword_response(message, keyword_response)
